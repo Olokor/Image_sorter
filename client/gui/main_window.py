@@ -1,14 +1,13 @@
 """
-Main Window - Primary application interface
-FIXED: Navigation button lambda and other issues
+Main Window - FIXED CIRCULAR IMPORT
+Moved service imports inside methods
 """
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QStackedWidget, QLabel, QFrame, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QIcon
-from datetime import datetime
+from PySide6.QtGui import QFont
 
 from gui.pages.dashboard_page import DashboardPage
 from gui.pages.enrollment_page import EnrollmentPage
@@ -16,8 +15,6 @@ from gui.pages.photo_import_page import PhotoImportPage
 from gui.pages.review_page import ReviewPage
 from gui.pages.share_page import SharePage
 from gui.pages.license_page import LicensePage
-from services.app_service import AppService
-from services.local_server import LocalServer
 
 
 class MainWindow(QMainWindow):
@@ -28,9 +25,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("TLP Photo App - Photographer Edition")
         self.setMinimumSize(1200, 800)
         
-        # Initialize services
+        # Initialize services - MOVED IMPORT INSIDE
+        print("Initializing services...")
+        from services.app_service import AppService
+        from services.local_server import LocalServer
+        
         self.app_service = AppService()
         self.local_server = LocalServer(app_service=self.app_service)
+        print("✓ Services initialized")
         
         # Setup UI
         self.setup_ui()
@@ -68,7 +70,7 @@ class MainWindow(QMainWindow):
         # Update server status periodically
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_server_status)
-        self.status_timer.start(2000)  # Every 2 seconds
+        self.status_timer.start(2000)
     
     def create_sidebar(self):
         """Create navigation sidebar"""
@@ -127,12 +129,10 @@ class MainWindow(QMainWindow):
         for i, (name, icon) in enumerate(pages):
             btn = QPushButton(f"{icon}  {name}")
             btn.setCheckable(True)
-            # FIX: Properly capture index with default argument
             btn.clicked.connect(lambda checked=False, idx=i: self.switch_page(idx))
             layout.addWidget(btn)
             self.nav_buttons.append(btn)
         
-        # Set first button as active
         self.nav_buttons[0].setChecked(True)
         
         layout.addStretch()
@@ -175,14 +175,11 @@ class MainWindow(QMainWindow):
     
     def switch_page(self, index):
         """Switch to a different page"""
-        # Update button states
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
         
-        # Switch page
         self.content_stack.setCurrentIndex(index)
         
-        # Refresh page if needed
         current_page = self.content_stack.currentWidget()
         if hasattr(current_page, 'refresh'):
             current_page.refresh()
@@ -224,15 +221,10 @@ class MainWindow(QMainWindow):
                 f"Please renew your license to continue using the app.",
                 QMessageBox.Ok
             )
-            # Switch to license page
             self.switch_page(5)
     
     def closeEvent(self, event):
         """Handle application close"""
-        # Stop local server
         self.local_server.stop()
-        
-        # Close database connections
         self.app_service.close()
-        
         event.accept()

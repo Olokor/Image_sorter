@@ -1,16 +1,15 @@
 """
-Application Service Layer
-Bridges GUI and backend logic
+Application Service Layer - RAW SQL FIX
+Uses raw SQL for operations causing recursion
 """
 import os
-import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
-from sqlalchemy.orm import Session as DBSession
+from sqlalchemy import text
 
 from models import (
     init_db, Photographer, CampSession, Student, 
-    Photo, Face, StudentPhoto, ShareSession
+    Photo, Face, StudentPhoto
 )
 from face_service import FaceService
 
@@ -25,16 +24,13 @@ class AppService:
         self.current_photographer = None
         self.current_session = None
         
-        # Initialize photographer (in production, handle login)
         self._init_photographer()
     
     def _init_photographer(self):
         """Initialize or get photographer"""
-        # Check if photographer exists
         photographer = self.db_session.query(Photographer).first()
         
         if not photographer:
-            # Create default photographer (in production, this would be a registration flow)
             photographer = Photographer(
                 name="Demo Photographer",
                 email="demo@tlpphoto.com",
@@ -48,31 +44,35 @@ class AppService:
     # ==================== SESSION MANAGEMENT ====================
     
     def create_session(self, name: str, location: str = None) -> CampSession:
-        """Create a new camp session"""
-        # Check if there's already an active session
-        active = self.db_session.query(CampSession).filter_by(
-            photographer_id=self.current_photographer.id,
-            is_active=True
-        ).first()
+        """Create a new camp session - RAW SQL"""
+        # Count using raw SQL
+        result = self.db_session.execute(text(
+            "SELECT COUNT(*) FROM camp_sessions WHERE photographer_id = :pid AND payment_verified = 1"
+        ), {"pid": self.current_photographer.id})
+        completed_count = result.scalar()
         
-        # Determine if this is free trial
-        completed_sessions = self.db_session.query(CampSession).filter_by(
-            photographer_id=self.current_photographer.id,
-            payment_verified=True
-        ).count()
+        is_free = (completed_count == 0)
         
-        is_free = completed_sessions == 0  # First session is free
-        
-        session = CampSession(
-            photographer_id=self.current_photographer.id,
-            name=name,
-            location=location,
-            is_free_trial=is_free,
-            is_active=True
-        )
-        
-        self.db_session.add(session)
+        # Insert using raw SQL
+        now = datetime.utcnow()
+        self.db_session.execute(text(
+            """INSERT INTO camp_sessions 
+            (photographer_id, name, location, is_free_trial, is_active, student_count, start_date, amount_due, payment_verified)
+            VALUES (:pid, :name, :loc, :free, 1, 0, :start, 0.0, 0)"""
+        ), {
+            "pid": self.current_photographer.id,
+            "name": name,
+            "loc": location,
+            "free": 1 if is_free else 0,
+            "start": now
+        })
         self.db_session.commit()
+        
+        # Get the created session
+        session = self.db_session.query(CampSession).filter(
+            CampSession.photographer_id == self.current_photographer.id,
+            CampSession.name == name
+        ).order_by(CampSession.id.desc()).first()
         
         self.current_session = session
         return session
@@ -82,9 +82,9 @@ class AppService:
         if self.current_session and self.current_session.is_active:
             return self.current_session
         
-        session = self.db_session.query(CampSession).filter_by(
-            photographer_id=self.current_photographer.id,
-            is_active=True
+        session = self.db_session.query(CampSession).filter(
+            CampSession.photographer_id == self.current_photographer.id,
+            CampSession.is_active == True
         ).first()
         
         self.current_session = session
@@ -92,8 +92,8 @@ class AppService:
     
     def get_all_sessions(self) -> List[CampSession]:
         """Get all sessions for current photographer"""
-        return self.db_session.query(CampSession).filter_by(
-            photographer_id=self.current_photographer.id
+        return self.db_session.query(CampSession).filter(
+            CampSession.photographer_id == self.current_photographer.id
         ).order_by(CampSession.start_date.desc()).all()
     
     def set_active_session(self, session_id: int):
@@ -104,13 +104,11 @@ class AppService:
     
     def close_session(self, session: CampSession):
         """Close a session and calculate billing"""
-        session.is_active = False
-        session.closed_at = datetime.utcnow()
+        amount = 0.0 if session.is_free_trial else session.student_count * 200.0
         
-        # Calculate amount due (₦200 per student)
-        if not session.is_free_trial:
-            session.amount_due = session.student_count * 200.0
-        
+        self.db_session.execute(text(
+            "UPDATE camp_sessions SET is_active = 0, closed_at = :now, amount_due = :amount WHERE id = :id"
+        ), {"now": datetime.utcnow(), "amount": amount, "id": session.id})
         self.db_session.commit()
     
     # ==================== STUDENT ENROLLMENT ====================
@@ -118,18 +116,17 @@ class AppService:
     def enroll_student(self, state_code: str, full_name: str, 
                       reference_photo_path: str, email: str = None, 
                       phone: str = None) -> Optional[Student]:
-        """Enroll a new student"""
+        """Enroll a new student - RAW SQL"""
         session = self.get_active_session()
         if not session:
             raise Exception("No active session")
         
-        # Check for duplicate
-        existing = self.db_session.query(Student).filter_by(
-            session_id=session.id,
-            state_code=state_code
-        ).first()
+        # Check duplicate using raw SQL
+        result = self.db_session.execute(text(
+            "SELECT id FROM students WHERE session_id = :sid AND state_code = :code"
+        ), {"sid": session.id, "code": state_code})
         
-        if existing:
+        if result.fetchone():
             return None  # Already enrolled
         
         # Compute embedding
@@ -137,24 +134,38 @@ class AppService:
         if embedding is None:
             raise Exception("Could not detect face in reference photo")
         
-        # Create student
-        student = Student(
-            session_id=session.id,
-            state_code=state_code,
-            full_name=full_name,
-            email=email,
-            phone=phone,
-            reference_photo_path=reference_photo_path,
-            embedding=self.face_service.save_embedding(embedding),
-            embedding_model=self.face_service.model_name
-        )
+        # Insert using raw SQL
+        embedding_bytes = self.face_service.save_embedding(embedding)
         
-        self.db_session.add(student)
+        self.db_session.execute(text(
+            """INSERT INTO students 
+            (session_id, state_code, full_name, email, phone, reference_photo_path, embedding, embedding_model, registered_at)
+            VALUES (:sid, :code, :name, :email, :phone, :photo, :emb, :model, :reg)"""
+        ), {
+            "sid": session.id,
+            "code": state_code,
+            "name": full_name,
+            "email": email,
+            "phone": phone,
+            "photo": reference_photo_path,
+            "emb": embedding_bytes,
+            "model": self.face_service.model_name,
+            "reg": datetime.utcnow()
+        })
         
         # Update session count
-        session.student_count += 1
+        self.db_session.execute(text(
+            "UPDATE camp_sessions SET student_count = student_count + 1 WHERE id = :id"
+        ), {"id": session.id})
         
         self.db_session.commit()
+        
+        # Get the created student
+        student = self.db_session.query(Student).filter(
+            Student.session_id == session.id,
+            Student.state_code == state_code
+        ).first()
+        
         return student
     
     def get_students(self, session: CampSession = None) -> List[Student]:
@@ -165,8 +176,8 @@ class AppService:
         if not session:
             return []
         
-        return self.db_session.query(Student).filter_by(
-            session_id=session.id
+        return self.db_session.query(Student).filter(
+            Student.session_id == session.id
         ).all()
     
     def search_student(self, state_code: str) -> Optional[Student]:
@@ -175,9 +186,9 @@ class AppService:
         if not session:
             return None
         
-        return self.db_session.query(Student).filter_by(
-            session_id=session.id,
-            state_code=state_code
+        return self.db_session.query(Student).filter(
+            Student.session_id == session.id,
+            Student.state_code == state_code
         ).first()
     
     # ==================== PHOTO PROCESSING ====================
@@ -195,7 +206,7 @@ class AppService:
             'faces_matched': 0
         }
         
-        # Get student embeddings for matching
+        # Get student embeddings
         students = self.get_students(session)
         student_embeddings = []
         for student in students:
@@ -205,7 +216,6 @@ class AppService:
         
         for idx, photo_path in enumerate(photo_paths):
             try:
-                # Update progress
                 if progress_callback:
                     progress_callback(idx + 1, len(photo_paths), os.path.basename(photo_path))
                 
@@ -216,26 +226,37 @@ class AppService:
                 )
                 
                 # Check duplicate
-                existing = self.db_session.query(Photo).filter_by(
-                    file_hash=metadata['file_hash']
-                ).first()
+                result = self.db_session.execute(text(
+                    "SELECT id FROM photos WHERE file_hash = :hash"
+                ), {"hash": metadata['file_hash']})
                 
-                if existing:
+                if result.fetchone():
                     results['skipped'] += 1
                     continue
                 
-                # Create photo record
-                photo = Photo(
-                    session_id=session.id,
-                    original_path=photo_path,
-                    thumbnail_path=processed_path,
-                    file_hash=metadata['file_hash'],
-                    file_size=metadata['original_size'],
-                    width=metadata['width'],
-                    height=metadata['height']
-                )
-                self.db_session.add(photo)
-                self.db_session.flush()
+                # Insert photo using raw SQL
+                self.db_session.execute(text(
+                    """INSERT INTO photos 
+                    (session_id, original_path, thumbnail_path, file_hash, file_size, width, height, 
+                     processed, face_count, uploaded_at)
+                    VALUES (:sid, :orig, :thumb, :hash, :size, :w, :h, 0, 0, :up)"""
+                ), {
+                    "sid": session.id,
+                    "orig": photo_path,
+                    "thumb": processed_path,
+                    "hash": metadata['file_hash'],
+                    "size": metadata['original_size'],
+                    "w": metadata['width'],
+                    "h": metadata['height'],
+                    "up": datetime.utcnow()
+                })
+                self.db_session.commit()
+                
+                # Get photo ID
+                result = self.db_session.execute(text(
+                    "SELECT id FROM photos WHERE file_hash = :hash"
+                ), {"hash": metadata['file_hash']})
+                photo_id = result.scalar()
                 
                 # Detect faces
                 faces_data = self.face_service.detect_faces(processed_path)
@@ -244,28 +265,34 @@ class AppService:
                 matched_students = set()
                 
                 for face_data in faces_data:
-                    # Match face
                     match_result = self.face_service.match_face(
                         face_data['embedding'],
                         student_embeddings
                     )
                     
-                    # Store face
                     bbox = face_data['bbox']
-                    face = Face(
-                        photo_id=photo.id,
-                        student_id=match_result['student_id'],
-                        bbox_x=bbox[0],
-                        bbox_y=bbox[1],
-                        bbox_width=bbox[2],
-                        bbox_height=bbox[3],
-                        confidence=face_data['confidence'],
-                        embedding=self.face_service.save_embedding(face_data['embedding']),
-                        embedding_model=self.face_service.model_name,
-                        match_confidence=match_result['confidence'],
-                        needs_review=match_result['needs_review']
-                    )
-                    self.db_session.add(face)
+                    embedding_bytes = self.face_service.save_embedding(face_data['embedding'])
+                    
+                    # Insert face using raw SQL
+                    self.db_session.execute(text(
+                        """INSERT INTO faces 
+                        (photo_id, student_id, bbox_x, bbox_y, bbox_width, bbox_height, 
+                         confidence, embedding, embedding_model, match_confidence, needs_review, detected_at)
+                        VALUES (:pid, :sid, :x, :y, :w, :h, :conf, :emb, :model, :match, :review, :det)"""
+                    ), {
+                        "pid": photo_id,
+                        "sid": match_result['student_id'],
+                        "x": bbox[0],
+                        "y": bbox[1],
+                        "w": bbox[2],
+                        "h": bbox[3],
+                        "conf": face_data['confidence'],
+                        "emb": embedding_bytes,
+                        "model": self.face_service.model_name,
+                        "match": match_result['confidence'],
+                        "review": 1 if match_result['needs_review'] else 0,
+                        "det": datetime.utcnow()
+                    })
                     
                     if match_result['student_id']:
                         matched_students.add(match_result['student_id'])
@@ -273,24 +300,24 @@ class AppService:
                 
                 # Create associations
                 for student_id in matched_students:
-                    student_photo = StudentPhoto(
-                        student_id=student_id,
-                        photo_id=photo.id
-                    )
-                    self.db_session.add(student_photo)
+                    self.db_session.execute(text(
+                        "INSERT INTO student_photos (student_id, photo_id) VALUES (:sid, :pid)"
+                    ), {"sid": student_id, "pid": photo_id})
                 
                 # Update photo
-                photo.processed = True
-                photo.face_count = len(faces_data)
-                photo.processed_at = datetime.utcnow()
+                self.db_session.execute(text(
+                    "UPDATE photos SET processed = 1, face_count = :count, processed_at = :now WHERE id = :id"
+                ), {"count": len(faces_data), "now": datetime.utcnow(), "id": photo_id})
                 
+                self.db_session.commit()
                 results['processed'] += 1
                 
             except Exception as e:
                 print(f"Error processing {photo_path}: {e}")
+                import traceback
+                traceback.print_exc()
                 results['skipped'] += 1
         
-        self.db_session.commit()
         return results
     
     def get_photos(self, session: CampSession = None) -> List[Photo]:
@@ -301,17 +328,24 @@ class AppService:
         if not session:
             return []
         
-        return self.db_session.query(Photo).filter_by(
-            session_id=session.id
+        return self.db_session.query(Photo).filter(
+            Photo.session_id == session.id
         ).order_by(Photo.uploaded_at.desc()).all()
     
     def get_student_photos(self, student: Student) -> List[Photo]:
         """Get all photos for a student"""
-        return self.db_session.query(Photo).join(StudentPhoto).filter(
-            StudentPhoto.student_id == student.id
+        result = self.db_session.execute(text(
+            "SELECT photo_id FROM student_photos WHERE student_id = :sid"
+        ), {"sid": student.id})
+        
+        photo_ids = [row[0] for row in result]
+        
+        if not photo_ids:
+            return []
+        
+        return self.db_session.query(Photo).filter(
+            Photo.id.in_(photo_ids)
         ).all()
-    
-    # ==================== REVIEW & MATCHING ====================
     
     def get_faces_needing_review(self) -> List[Face]:
         """Get faces that need manual review"""
@@ -319,40 +353,46 @@ class AppService:
         if not session:
             return []
         
-        return self.db_session.query(Face).join(Photo).filter(
-            Photo.session_id == session.id,
-            Face.needs_review == True
-        ).all()
+        result = self.db_session.execute(text(
+            """SELECT f.* FROM faces f 
+            JOIN photos p ON f.photo_id = p.id 
+            WHERE p.session_id = :sid AND f.needs_review = 1"""
+        ), {"sid": session.id})
+        
+        face_ids = [row[0] for row in result]
+        
+        if not face_ids:
+            return []
+        
+        return self.db_session.query(Face).filter(Face.id.in_(face_ids)).all()
     
     def confirm_match(self, face_id: int, student_id: int):
         """Manually confirm a face match"""
         face = self.db_session.query(Face).get(face_id)
-        if face:
-            face.student_id = student_id
-            face.needs_review = False
-            face.manual_verified = True
-            
-            # Create association
-            existing = self.db_session.query(StudentPhoto).filter_by(
-                student_id=student_id,
-                photo_id=face.photo_id
-            ).first()
-            
-            if not existing:
-                student_photo = StudentPhoto(
-                    student_id=student_id,
-                    photo_id=face.photo_id
-                )
-                self.db_session.add(student_photo)
-            
-            self.db_session.commit()
-    
-    # ==================== LICENSE MANAGEMENT ====================
+        if not face:
+            return
+        
+        # Update face
+        self.db_session.execute(text(
+            "UPDATE faces SET student_id = :sid, needs_review = 0, manual_verified = 1 WHERE id = :fid"
+        ), {"sid": student_id, "fid": face_id})
+        
+        # Check if association exists
+        result = self.db_session.execute(text(
+            "SELECT id FROM student_photos WHERE student_id = :sid AND photo_id = :pid"
+        ), {"sid": student_id, "pid": face.photo_id})
+        
+        if not result.fetchone():
+            self.db_session.execute(text(
+                "INSERT INTO student_photos (student_id, photo_id) VALUES (:sid, :pid)"
+            ), {"sid": student_id, "pid": face.photo_id})
+        
+        self.db_session.commit()
     
     def check_license(self) -> Dict:
         """Check license validity"""
         if not self.current_photographer.license_valid_until:
-            return {'valid': False, 'expires': None}
+            return {'valid': False, 'expires': None, 'days_remaining': 0}
         
         now = datetime.utcnow()
         valid = now < self.current_photographer.license_valid_until
@@ -360,7 +400,7 @@ class AppService:
         return {
             'valid': valid,
             'expires': self.current_photographer.license_valid_until.strftime('%Y-%m-%d'),
-            'days_remaining': (self.current_photographer.license_valid_until - now).days
+            'days_remaining': max(0, (self.current_photographer.license_valid_until - now).days)
         }
     
     def get_session_stats(self) -> Dict:
@@ -369,25 +409,26 @@ class AppService:
         if not session:
             return {}
         
-        photos = self.get_photos(session)
-        students = self.get_students(session)
+        result = self.db_session.execute(text(
+            """SELECT 
+                (SELECT COUNT(*) FROM students WHERE session_id = :sid) as students,
+                (SELECT COUNT(*) FROM photos WHERE session_id = :sid) as photos,
+                (SELECT COALESCE(SUM(face_count), 0) FROM photos WHERE session_id = :sid) as total_faces,
+                (SELECT COUNT(*) FROM faces f JOIN photos p ON f.photo_id = p.id 
+                 WHERE p.session_id = :sid AND f.student_id IS NOT NULL) as matched,
+                (SELECT COUNT(*) FROM faces f JOIN photos p ON f.photo_id = p.id 
+                 WHERE p.session_id = :sid AND f.needs_review = 1) as review"""
+        ), {"sid": session.id})
         
-        total_faces = sum(p.face_count for p in photos)
-        matched_faces = self.db_session.query(Face).join(Photo).filter(
-            Photo.session_id == session.id,
-            Face.student_id != None
-        ).count()
+        row = result.fetchone()
         
         return {
             'session_name': session.name,
-            'students': len(students),
-            'photos': len(photos),
-            'total_faces': total_faces,
-            'matched_faces': matched_faces,
-            'needs_review': self.db_session.query(Face).join(Photo).filter(
-                Photo.session_id == session.id,
-                Face.needs_review == True
-            ).count()
+            'students': row[0],
+            'photos': row[1],
+            'total_faces': row[2],
+            'matched_faces': row[3],
+            'needs_review': row[4]
         }
     
     def close(self):
