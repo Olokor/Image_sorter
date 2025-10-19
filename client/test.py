@@ -1,68 +1,70 @@
-# from deepface import DeepFace
+import os
+import cv2
+from face_service import FaceService
 
-# # Paths to two face images
-# img1 = "C:/Users/oloko/Desktop/Image_sorter/images/20250804_120936.jpg"
-# img2 = "C:/Users/oloko/Desktop/Image_sorter/images/20250805_154446.jpg"
+if __name__ == '__main__':
+    print("Testing FaceService...")
+    service = FaceService()
 
-# # Perform face verification
-# result = DeepFace.verify(
-#     img1_path=img1,
-#     img2_path=img2,
-#     model_name="Facenet",      # or "VGG-Face", "ArcFace", etc.
-#     detector_backend="retinaface",  # options: mtcnn, opencv, ssd, mediapipe
-#     enforce_detection=True     # set False if some images may not have faces
-# )
+    # --- STEP 1: Reference image (the person you want to find)
+    reference_path = "C:/Users/oloko/Desktop/Image_sorter/images2/images (3).jpeg"
+    reference_embedding = service.compute_embedding(reference_path)
+    if reference_embedding is None:
+        print("❌ Failed to compute reference embedding")
+        exit()
 
-# # Print the result
-# print("Are they the same person?:", result["verified"])
-# print("Similarity score:", result["distance"])
-# print("Model used:", result["model"])
+    # --- STEP 2: Directory of images to check
+    image_dir = "C:/Users/oloko/Desktop/Image_sorter/images2"
+    image_files = [
+        os.path.join(image_dir, f)
+        for f in os.listdir(image_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
 
+    # --- STEP 3: Prepare embeddings list for matching
+    student_embeddings = [(1, reference_embedding)]  # pretend ID 1 is our reference person
 
-from deepface import DeepFace
-from numpy import dot
-from numpy.linalg import norm
-import time
+    print(f"🔍 Matching reference face against {len(image_files)} images.../n")
 
-# --- STEP 1: Load model (optional, DeepFace can handle internally) ---
-print("🚀 Loading model (Facenet)...")
-model = DeepFace.build_model("Facenet")
-print("✅ Model loaded!/n")
+    total_matches = 0  # total identical faces found
+    image_match_counts = {}  # store match counts per image
 
-# --- STEP 2: Image paths ---
-img1_path = "C:/Users/oloko/Desktop/Image_sorter/images/20250804_120936.jpg"
-img2_path = "C:/Users/oloko/Desktop/Image_sorter/images/20250805_154446.jpg"
-# img2_path = "C:/Users/oloko/Desktop/Image_sorter/images/20250804_134212.jpg"
+    for img_path in image_files:
+        if img_path == reference_path:
+            continue  # skip self-comparison
 
+        print(f"🖼️ Testing: {os.path.basename(img_path)}")
 
-# --- STEP 3: Compute embeddings ---
-print("🧠 Computing embeddings...")
-start_time = time.time()
+        faces = service.detect_faces(img_path)
+        if not faces:
+            print("   ⚠️ No faces detected in this image./n")
+            continue
 
-embedding1 = DeepFace.represent(
-    img_path=img1_path,
-    model_name="Facenet",
-    detector_backend="opencv",
-    enforce_detection=False
-)[0]["embedding"]
+        image_match_count = 0  # matches in current image
+        for face in faces:
+            match_result = service.match_face(face["embedding"], student_embeddings)
+            conf = match_result["confidence"]
 
-embedding2 = DeepFace.represent(
-    img_path=img2_path,
-    model_name="Facenet",
-    detector_backend="opencv",
-    enforce_detection=False
-)[0]["embedding"]
+            if match_result["student_id"]:
+                image_match_count += 1
+                total_matches += 1
+                print(f"   ✅ Match found! Confidence: {conf:.4f}")
+                print(f"      → Face index: {face['face_index']} Bounding Box: {face['bbox']}")
+            else:
+                print(f"   ❌ Not a match (confidence: {conf:.4f})")
 
-print(f"⏱️ Embeddings computed in {time.time() - start_time:.2f}s")
+        image_match_counts[os.path.basename(img_path)] = image_match_count
 
-# --- STEP 4: Compare embeddings ---
-def cosine_similarity(vec1, vec2):
-    return dot(vec1, vec2) / (norm(vec1) * norm(vec2))
+        print(f"👉 Matches found in this image: {image_match_count}/n")
 
-similarity = cosine_similarity(embedding1, embedding2)
-threshold = 0.65
+    # --- STEP 5: Summary
+    print("✅ Test completed!")
+    print(f"/n📸 Total identical faces found: {total_matches}")
 
-# --- STEP 5: Result ---
-print("/n--- RESULT ---")
-print(f"Similarity score (cosine): {similarity:.4f}")
-print(f"Are they the same person?: {'✅ YES' if similarity > threshold else '❌ NO'}")
+    if total_matches > 0:
+        print("/n📊 Breakdown by image:")
+        for img_name, count in image_match_counts.items():
+            if count > 0:
+                print(f"   - {img_name}: {count} identical face(s)")
+    else:
+        print("❌ No identical faces found in any image.")

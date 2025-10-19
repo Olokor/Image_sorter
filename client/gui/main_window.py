@@ -1,5 +1,6 @@
 """
 Main Window - Primary application interface
+FIXED: Navigation button lambda and other issues
 """
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -126,7 +127,8 @@ class MainWindow(QMainWindow):
         for i, (name, icon) in enumerate(pages):
             btn = QPushButton(f"{icon}  {name}")
             btn.setCheckable(True)
-            btn.clicked.connect(lambda checked, idx=i: self.switch_page(idx))
+            # FIX: Properly capture index with default argument
+            btn.clicked.connect(lambda checked=False, idx=i: self.switch_page(idx))
             layout.addWidget(btn)
             self.nav_buttons.append(btn)
         
