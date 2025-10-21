@@ -368,7 +368,7 @@ class AppService:
     
     def confirm_match(self, face_id: int, student_id: int):
         """Manually confirm a face match"""
-        face = self.db_session.query(Face).get(face_id)
+        face = self.db_session.get(Face, face_id)
         if not face:
             return
         

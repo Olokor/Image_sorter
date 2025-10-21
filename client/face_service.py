@@ -1,58 +1,26 @@
 """
 Face Recognition Service using InsightFace (ONNX Runtime)
-Production-ready, lightweight, and perfect for desktop apps
-
-INSTALLATION:
-    pip install insightface==0.7.3
-    pip install onnxruntime==1.16.0
-    pip install opencv-python
+Uses centralized dependency manager to avoid circular imports
 """
-import os
-import sys
-import numpy as np
-from PIL import Image
-from typing import List, Tuple, Optional, Dict
-import hashlib
-import cv2
-
-# Try to import InsightFace with comprehensive error handling
-INSIGHTFACE_AVAILABLE = False
-FaceAnalysis = None
-import_error_message = None
-
-try:
-    from insightface.app import FaceAnalysis
-    INSIGHTFACE_AVAILABLE = True
-except ImportError as e:
-    import_error_message = str(e)
-    INSIGHTFACE_AVAILABLE = False
-except Exception as e:
-    import_error_message = f"Unexpected error: {e}"
-    INSIGHTFACE_AVAILABLE = False
-
-# Configuration
-SIMILARITY_THRESHOLD = 0.40  # Cosine similarity (0-1, higher = more similar)
-REVIEW_THRESHOLD = 0.30      # Below this = no match
-THUMBNAIL_MAX = 1080
-COMPRESSION_QUALITY = 85
+from dependencies import (
+    os, np, cv2, Image, hashlib,
+    Optional, List, Tuple, Dict,
+    FaceAnalysis, INSIGHTFACE_AVAILABLE,
+    SIMILARITY_THRESHOLD, REVIEW_THRESHOLD, 
+    THUMBNAIL_MAX, COMPRESSION_QUALITY
+)
 
 
 class FaceService:
     """Face detection and recognition using InsightFace"""
     
-    def __init__(self, model_name="buffalo_l"):
+    def __init__(self, model_name="antelopev2"):
         # CRITICAL: Check if InsightFace is available BEFORE trying to use it
         if not INSIGHTFACE_AVAILABLE or FaceAnalysis is None:
             error_msg = [
                 "\n" + "="*70,
                 "❌ CRITICAL ERROR: InsightFace is not properly installed!",
                 "="*70,
-            ]
-            
-            if import_error_message:
-                error_msg.append(f"Import error: {import_error_message}")
-            
-            error_msg.extend([
                 "",
                 "To fix this issue:",
                 "",
@@ -61,22 +29,17 @@ class FaceService:
                 "   cd C:\\Users\\oloko\\Desktop\\Image_sorter",
                 "   .venv\\Scripts\\activate",
                 "",
-                "3. Uninstall any broken installations:",
+                "3. Run the fix script:",
+                "   fix_installation.bat",
+                "",
+                "OR manually fix:",
+                "   pip uninstall numpy -y",
+                "   pip install 'numpy<2.0'",
                 "   pip uninstall insightface onnxruntime -y",
-                "",
-                "4. Install fresh versions:",
-                "   pip install insightface==0.7.3",
-                "   pip install onnxruntime==1.16.0",
-                "   pip install opencv-python",
-                "",
-                "5. Test the installation:",
-                "   python -c \"from insightface.app import FaceAnalysis; print('Success!')\"",
-                "",
-                "If step 4 fails with network errors, try:",
-                "   pip install --no-cache-dir insightface==0.7.3",
+                "   pip install insightface==0.7.3 onnxruntime==1.16.0",
                 "",
                 "="*70,
-            ])
+            ]
             
             full_error = "\n".join(error_msg)
             print(full_error)
@@ -139,43 +102,25 @@ class FaceService:
         try:
             self.app.prepare(ctx_id=0, det_size=(640, 640))
             print("  ✓ Model ready!")
-        except AssertionError as e:
+        except Exception as e:
             error_msg = [
                 "\n" + "="*70,
-                "❌ MODEL DOWNLOAD FAILED",
+                "❌ MODEL PREPARATION FAILED",
                 "="*70,
-                "InsightFace needs to download model files (~50MB) on first run.",
                 f"Error: {e}",
                 "",
-                "Troubleshooting:",
+                "This usually means:",
+                "1. First-time download failed (need ~50MB space + internet)",
+                "2. NumPy version incompatibility",
                 "",
-                "1. Check internet connection",
-                "2. Ensure ~100MB free disk space",
+                "Solution:",
+                "  Run: fix_installation.bat",
                 "",
-                "3. If behind a proxy, set these environment variables:",
-                "   Windows:",
-                "     set HTTP_PROXY=http://your-proxy:port",
-                "     set HTTPS_PROXY=http://your-proxy:port",
-                "   Linux/Mac:",
-                "     export HTTP_PROXY=http://your-proxy:port",
-                "     export HTTPS_PROXY=http://your-proxy:port",
-                "",
-                "4. Manual download (if internet fails):",
-                "   a. Visit: https://github.com/deepinsight/insightface/releases",
-                "   b. Download: buffalo_l.zip",
-                "   c. Extract to one of these locations:",
-                "      Windows: C:\\Users\\oloko\\.insightface\\models\\buffalo_l\\",
-                "      Linux: ~/.insightface/models/buffalo_l/",
-                "",
-                "5. Then try running the app again",
                 "="*70,
             ]
             full_error = "\n".join(error_msg)
             print(full_error)
             raise Exception(f"Failed to prepare InsightFace model: {e}")
-        except Exception as e:
-            print(f"\n✗ Unexpected error preparing model: {e}\n")
-            raise
     
     def preprocess_image(self, img_path: str, output_dir: str = None) -> Tuple[str, Dict]:
         """Preprocess image: resize, compress, compute hash"""
@@ -373,15 +318,16 @@ class FaceService:
 
 # Test script
 if __name__ == '__main__':
+    import sys
+    
     print("\n" + "="*70)
     print("InsightFace Installation Test")
     print("="*70 + "\n")
     
     if not INSIGHTFACE_AVAILABLE:
         print("✗ InsightFace is NOT installed properly!")
-        print(f"  Error: {import_error_message}")
         print("\nRun this to fix:")
-        print("  pip install insightface==0.7.3 onnxruntime==1.16.0 opencv-python")
+        print("  fix_installation.bat")
         sys.exit(1)
     
     print("✓ InsightFace package found")

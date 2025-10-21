@@ -1,13 +1,13 @@
 """
 Dashboard Page - Session overview and management
+Uses centralized dependency manager
 """
-from PySide6.QtWidgets import (
+from dependencies import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QGroupBox, QGridLayout, QComboBox,
-    QDialog, QLineEdit, QDialogButtonBox, QFormLayout
+    QDialog, QLineEdit, QDialogButtonBox, QFormLayout,
+    Qt, Signal, QFont
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 
 
 class DashboardPage(QWidget):
@@ -147,6 +147,9 @@ class DashboardPage(QWidget):
     
     def refresh(self):
         """Refresh dashboard data"""
+        if not self.app_service:
+            return
+            
         # Load sessions
         self.session_combo.clear()
         sessions = self.app_service.get_all_sessions()
@@ -200,7 +203,7 @@ class DashboardPage(QWidget):
     
     def on_session_selected(self, index):
         """Handle session selection change"""
-        if index >= 0:
+        if index >= 0 and self.app_service:
             session_id = self.session_combo.itemData(index)
             if session_id:
                 self.app_service.set_active_session(session_id)
@@ -211,8 +214,9 @@ class DashboardPage(QWidget):
         dialog = NewSessionDialog(self)
         if dialog.exec():
             name, location = dialog.get_values()
-            session = self.app_service.create_session(name, location)
-            self.refresh()
+            if self.app_service:
+                session = self.app_service.create_session(name, location)
+                self.refresh()
     
     def go_to_enrollment(self):
         """Navigate to enrollment page"""

@@ -1,47 +1,36 @@
 """
 Main Window - FIXED CIRCULAR IMPORT
-Moved service imports inside methods
+Uses lazy imports and dependency injection
 """
-from PySide6.QtWidgets import (
+from dependencies import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QStackedWidget, QLabel, QFrame, QMessageBox
+    QPushButton, QStackedWidget, QLabel, QFrame, QMessageBox,
+    Qt, QTimer, QFont
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
-
-from gui.pages.dashboard_page import DashboardPage
-from gui.pages.enrollment_page import EnrollmentPage
-from gui.pages.photo_import_page import PhotoImportPage
-from gui.pages.review_page import ReviewPage
-from gui.pages.share_page import SharePage
-from gui.pages.license_page import LicensePage
 
 
 class MainWindow(QMainWindow):
     """Main application window with navigation"""
     
-    def __init__(self):
+    def __init__(self, app_service=None, local_server=None):
         super().__init__()
         self.setWindowTitle("TLP Photo App - Photographer Edition")
         self.setMinimumSize(1200, 800)
         
-        # Initialize services - MOVED IMPORT INSIDE
-        print("Initializing services...")
-        from services.app_service import AppService
-        from services.local_server import LocalServer
-        
-        self.app_service = AppService()
-        self.local_server = LocalServer(app_service=self.app_service)
-        print("✓ Services initialized")
+        # Services are now injected from outside
+        self.app_service = app_service
+        self.local_server = local_server
         
         # Setup UI
         self.setup_ui()
         
-        # Start local server
-        self.local_server.start()
+        # Start local server if available
+        if self.local_server:
+            self.local_server.start()
         
         # Check license on startup
-        self.check_license()
+        if self.app_service:
+            self.check_license()
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -150,6 +139,14 @@ class MainWindow(QMainWindow):
         """Create main content area with stacked pages"""
         self.content_stack = QStackedWidget()
         
+        # Lazy import pages to avoid circular dependencies
+        from gui.pages.dashboard_page import DashboardPage
+        from gui.pages.enrollment_page import EnrollmentPage
+        from gui.pages.photo_import_page import PhotoImportPage
+        from gui.pages.review_page import ReviewPage
+        from gui.pages.share_page import SharePage
+        from gui.pages.license_page import LicensePage
+        
         # Create pages
         self.dashboard_page = DashboardPage(self.app_service)
         self.enrollment_page = EnrollmentPage(self.app_service)
@@ -200,7 +197,7 @@ class MainWindow(QMainWindow):
     
     def update_server_status(self):
         """Update server status in status bar"""
-        if self.local_server.is_running():
+        if self.local_server and self.local_server.is_running():
             port = self.local_server.get_port()
             self.server_status_label.setText(f"✓ Server: http://localhost:{port}")
             self.server_status_label.setStyleSheet("color: green;")
@@ -210,6 +207,9 @@ class MainWindow(QMainWindow):
     
     def check_license(self):
         """Check license validity on startup"""
+        if not self.app_service:
+            return
+            
         license_status = self.app_service.check_license()
         
         if not license_status['valid']:
@@ -225,6 +225,8 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Handle application close"""
-        self.local_server.stop()
-        self.app_service.close()
+        if self.local_server:
+            self.local_server.stop()
+        if self.app_service:
+            self.app_service.close()
         event.accept()
