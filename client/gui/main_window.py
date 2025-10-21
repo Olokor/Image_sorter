@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         
         # Lazy import pages to avoid circular dependencies
         from gui.pages.dashboard_page import DashboardPage
-        from gui.pages.enrollment_page import EnrollmentPage
+        from gui.pages.enrollment_page import MultiPhotoEnrollmentPage  # FIXED: Correct class name
         from gui.pages.photo_import_page import PhotoImportPage
         from gui.pages.review_page import ReviewPage
         from gui.pages.share_page import SharePage
@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
         
         # Create pages
         self.dashboard_page = DashboardPage(self.app_service)
-        self.enrollment_page = EnrollmentPage(self.app_service)
+        self.enrollment_page = MultiPhotoEnrollmentPage(self.app_service)  # FIXED: Correct class name
         self.photo_import_page = PhotoImportPage(self.app_service)
         self.review_page = ReviewPage(self.app_service)
         self.share_page = SharePage(self.app_service, self.local_server)

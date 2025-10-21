@@ -1,5 +1,5 @@
 """
-Centralized Dependency Manager
+Centralized Dependency Manager - FIXED VERSION
 All imports happen here to prevent circular dependencies
 """
 import sys
@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Tuple, Any
 
 # ==================== THIRD PARTY IMPORTS ====================
-# These are imported first as they have no internal dependencies
 
 # Database
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, LargeBinary, text
@@ -37,13 +36,17 @@ try:
         QLineEdit, QFormLayout, QGroupBox, QGridLayout, QComboBox,
         QDialog, QDialogButtonBox, QFileDialog, QProgressBar,
         QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-        QScrollArea, QSpinBox
+        QScrollArea, QSpinBox, QCheckBox
     )
     from PySide6.QtCore import Qt, QTimer, Signal, QThread
     from PySide6.QtGui import QFont, QPixmap, QImage, QGuiApplication
     PYSIDE6_AVAILABLE = True
 except ImportError:
     PYSIDE6_AVAILABLE = False
+    # Create dummy classes to prevent import errors
+    class QWidget: pass
+    class Signal: pass
+    class QThread: pass
 
 # Server
 try:
@@ -62,6 +65,7 @@ try:
     QRCODE_AVAILABLE = True
 except ImportError:
     QRCODE_AVAILABLE = False
+    BytesIO = None
 
 # Utilities
 import socket
@@ -157,7 +161,7 @@ __all__ = [
     'QLineEdit', 'QFormLayout', 'QGroupBox', 'QGridLayout', 'QComboBox',
     'QDialog', 'QDialogButtonBox', 'QFileDialog', 'QProgressBar',
     'QTextEdit', 'QTableWidget', 'QTableWidgetItem', 'QHeaderView',
-    'QScrollArea', 'QSpinBox',
+    'QScrollArea', 'QSpinBox', 'QCheckBox',
     'Qt', 'QTimer', 'Signal', 'QThread',
     'QFont', 'QPixmap', 'QImage', 'QGuiApplication',
     'PYSIDE6_AVAILABLE',

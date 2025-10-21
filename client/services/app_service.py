@@ -6,6 +6,7 @@ Enhanced Application Service with:
 - Raw SQL to avoid recursion errors
 """
 import os
+import numpy as np 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Tuple
 from sqlalchemy import text

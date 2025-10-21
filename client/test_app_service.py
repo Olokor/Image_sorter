@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import init_db, Photographer, CampSession, Student
+from client.models import init_db, Photographer, CampSession, Student
 from services.app_service import AppService
 
 

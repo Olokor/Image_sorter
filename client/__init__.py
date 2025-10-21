@@ -1,1 +1,1 @@
-from models import Face, Student
+from models import Photographer, CampSession, Student
