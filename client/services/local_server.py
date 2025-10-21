@@ -1,6 +1,6 @@
 """
-Local FastAPI Server - Runs in background for photo sharing
-Serves photos and QR sessions over local Wi-Fi
+Fixed Local FastAPI Server with Correct IP Detection
+Works on local network for external device access
 """
 import os
 import socket
@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from threading import Thread
+import netifaces  # pip install netifaces
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -17,48 +18,135 @@ import uvicorn
 from models import ShareSession, Student, Photo, StudentPhoto
 
 
-class LocalServer:
-    """Manages local FastAPI server for photo sharing"""
+class FixedLocalServer:
+    """Local server with correct network IP detection"""
     
     def __init__(self, app_service, port=8000):
         self.app_service = app_service
         self.port = port
         self.server_thread = None
         self.running = False
-        
-        # In-memory session store (for ephemeral sessions)
         self.active_sessions = {}
         
-        # Create FastAPI app
         self.app = FastAPI(title="TLP Photo Share")
         self.setup_routes()
+    
+    def get_local_ip(self) -> str:
+        """Get the correct local network IP address"""
+        try:
+            # Method 1: Try netifaces (most reliable)
+            try:
+                import netifaces
+                
+                # Get all network interfaces
+                interfaces = netifaces.interfaces()
+                
+                # Priority order: Wi-Fi adapters, then Ethernet
+                priority_prefixes = ['wlan', 'Wi-Fi', 'en', 'eth', 'Ethernet']
+                
+                for prefix in priority_prefixes:
+                    for interface in interfaces:
+                        if interface.lower().startswith(prefix.lower()):
+                            try:
+                                addrs = netifaces.ifaddresses(interface)
+                                if netifaces.AF_INET in addrs:
+                                    for addr_info in addrs[netifaces.AF_INET]:
+                                        ip = addr_info.get('addr')
+                                        if ip and not ip.startswith('127.'):
+                                            print(f"  ✓ Found IP on {interface}: {ip}")
+                                            return ip
+                            except:
+                                continue
+            except ImportError:
+                pass
+            
+            # Method 2: Socket method (fallback)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1)
+            try:
+                # Connect to external address (doesn't actually send data)
+                s.connect(('10.255.255.255', 1))
+                ip = s.getsockname()[0]
+            except Exception:
+                ip = '127.0.0.1'
+            finally:
+                s.close()
+            
+            if ip and not ip.startswith('127.'):
+                return ip
+            
+            # Method 3: Get all IPs and filter
+            hostname = socket.gethostname()
+            ip_list = socket.gethostbyname_ex(hostname)[2]
+            
+            for ip in ip_list:
+                if not ip.startswith('127.'):
+                    return ip
+            
+            return '127.0.0.1'
+            
+        except Exception as e:
+            print(f"  ⚠ IP detection error: {e}")
+            return '127.0.0.1'
+    
+    def get_all_network_ips(self) -> list:
+        """Get all available network IPs for display"""
+        ips = []
+        
+        try:
+            import netifaces
+            
+            for interface in netifaces.interfaces():
+                try:
+                    addrs = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addrs:
+                        for addr_info in addrs[netifaces.AF_INET]:
+                            ip = addr_info.get('addr')
+                            if ip and not ip.startswith('127.'):
+                                ips.append({
+                                    'interface': interface,
+                                    'ip': ip
+                                })
+                except:
+                    continue
+        except ImportError:
+            # Fallback
+            hostname = socket.gethostname()
+            ip_list = socket.gethostbyname_ex(hostname)[2]
+            for ip in ip_list:
+                if not ip.startswith('127.'):
+                    ips.append({'interface': 'default', 'ip': ip})
+        
+        return ips
     
     def setup_routes(self):
         """Setup FastAPI routes"""
         
         @self.app.get("/")
         async def root():
-            return {"message": "TLP Photo Share Server", "status": "running"}
+            return {
+                "message": "TLP Photo Share Server",
+                "status": "running",
+                "server_ip": self.get_local_ip(),
+                "port": self.port,
+                "active_sessions": len(self.active_sessions)
+            }
         
         @self.app.get("/student/{session_uuid}", response_class=HTMLResponse)
         async def student_gallery(session_uuid: str):
-            """Serve photo gallery for a student"""
-            # Check if session exists
+            """Student photo gallery"""
             if session_uuid not in self.active_sessions:
                 raise HTTPException(status_code=404, detail="Session not found or expired")
             
             session_data = self.active_sessions[session_uuid]
             
-            # Check expiry
             if datetime.utcnow() > session_data['expires_at']:
                 del self.active_sessions[session_uuid]
                 raise HTTPException(status_code=410, detail="Session expired")
             
-            # Check download limit
             if session_data['downloads_used'] >= session_data['download_limit']:
                 raise HTTPException(status_code=403, detail="Download limit reached")
             
-            # Get student and photos
             student_id = session_data['student_id']
             student = self.app_service.db_session.query(Student).get(student_id)
             
@@ -67,13 +155,12 @@ class LocalServer:
             
             photos = self.app_service.get_student_photos(student)
             
-            # Generate HTML gallery
             photo_cards = ""
             if photos:
                 for photo in photos:
                     photo_cards += f"""
                     <div class="photo-card">
-                        <img src="/photo/{photo.id}" alt="Photo">
+                        <img src="/photo/{photo.id}" alt="Photo" loading="lazy">
                         <div class="photo-actions">
                             <a href="/download/{photo.id}?session={session_uuid}" download>
                                 <button class="download-btn">⬇ Download</button>
@@ -83,7 +170,7 @@ class LocalServer:
                     """
                 gallery_html = f'<div class="gallery">{photo_cards}</div>'
             else:
-                gallery_html = '<div class="no-photos"><h2>No photos available yet</h2></div>'
+                gallery_html = '<div class="no-photos"><h2>📷 No photos available yet</h2><p>Check back later!</p></div>'
             
             html = f"""
             <!DOCTYPE html>
@@ -91,10 +178,11 @@ class LocalServer:
             <head>
                 <title>Photos for {student.full_name}</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta charset="UTF-8">
                 <style>
                     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                     body {{
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         min-height: 100vh;
                         padding: 20px;
@@ -119,10 +207,11 @@ class LocalServer:
                     .info {{
                         color: #666;
                         font-size: 14px;
+                        margin: 5px 0;
                     }}
                     .gallery {{
                         display: grid;
-                        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
                         gap: 20px;
                         margin-bottom: 30px;
                     }}
@@ -131,7 +220,7 @@ class LocalServer:
                         border-radius: 12px;
                         overflow: hidden;
                         box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-                        transition: transform 0.3s;
+                        transition: transform 0.3s, box-shadow 0.3s;
                     }}
                     .photo-card:hover {{
                         transform: translateY(-5px);
@@ -139,7 +228,7 @@ class LocalServer:
                     }}
                     .photo-card img {{
                         width: 100%;
-                        height: 250px;
+                        height: 280px;
                         object-fit: cover;
                         display: block;
                     }}
@@ -164,6 +253,9 @@ class LocalServer:
                     .download-btn:hover {{
                         background: #5568d3;
                     }}
+                    .download-btn:active {{
+                        transform: scale(0.95);
+                    }}
                     .footer {{
                         background: white;
                         padding: 20px;
@@ -177,11 +269,26 @@ class LocalServer:
                     }}
                     .no-photos {{
                         text-align: center;
-                        padding: 60px 20px;
+                        padding: 80px 20px;
                         background: white;
                         border-radius: 15px;
                         box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+                    }}
+                    .no-photos h2 {{
                         color: #999;
+                        margin-bottom: 10px;
+                    }}
+                    .no-photos p {{
+                        color: #bbb;
+                    }}
+                    @media (max-width: 768px) {{
+                        .gallery {{
+                            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                            gap: 15px;
+                        }}
+                        .photo-card img {{
+                            height: 220px;
+                        }}
                     }}
                 </style>
             </head>
@@ -189,7 +296,8 @@ class LocalServer:
                 <div class="container">
                     <div class="header">
                         <h1>📷 Your Photos</h1>
-                        <p class="info">{student.full_name} ({student.state_code})</p>
+                        <p class="info"><strong>{student.full_name}</strong></p>
+                        <p class="info">State Code: {student.state_code}</p>
                         <p class="info">{len(photos)} photo(s) available</p>
                     </div>
                     
@@ -197,8 +305,8 @@ class LocalServer:
                     
                     <div class="footer">
                         <p class="stats">
-                            Downloads used: {session_data['downloads_used']}/{session_data['download_limit']} | 
-                            Expires: {session_data['expires_at'].strftime('%Y-%m-%d %H:%M')}
+                            📥 Downloads: {session_data['downloads_used']}/{session_data['download_limit']} | 
+                            ⏰ Expires: {session_data['expires_at'].strftime('%Y-%m-%d %H:%M')}
                         </p>
                     </div>
                 </div>
@@ -206,7 +314,6 @@ class LocalServer:
             </html>
             """
             
-            # Update access stats
             session_data['access_count'] += 1
             session_data['last_accessed'] = datetime.utcnow()
             
@@ -225,40 +332,35 @@ class LocalServer:
             if not os.path.exists(path):
                 raise HTTPException(status_code=404, detail="Photo file not found")
             
-            return FileResponse(path)
+            return FileResponse(path, media_type='image/jpeg')
         
         @self.app.get("/download/{photo_id}")
         async def download_photo(photo_id: int, session: str):
             """Download original photo"""
-            # Verify session
             if session not in self.active_sessions:
                 raise HTTPException(status_code=403, detail="Invalid session")
             
             session_data = self.active_sessions[session]
             
-            # Check limits
             if session_data['downloads_used'] >= session_data['download_limit']:
                 raise HTTPException(status_code=403, detail="Download limit reached")
             
             if datetime.utcnow() > session_data['expires_at']:
                 raise HTTPException(status_code=410, detail="Session expired")
             
-            # Get photo
             photo = self.app_service.db_session.query(Photo).get(photo_id)
             
             if not photo:
                 raise HTTPException(status_code=404, detail="Photo not found")
             
-            # Verify photo belongs to student
             student_photo = self.app_service.db_session.query(StudentPhoto).filter_by(
                 student_id=session_data['student_id'],
                 photo_id=photo_id
             ).first()
             
             if not student_photo:
-                raise HTTPException(status_code=403, detail="Photo not available for this student")
+                raise HTTPException(status_code=403, detail="Photo not available")
             
-            # Increment download counter
             session_data['downloads_used'] += 1
             student_photo.download_count += 1
             self.app_service.db_session.commit()
@@ -271,12 +373,12 @@ class LocalServer:
             return FileResponse(
                 path,
                 media_type='image/jpeg',
-                filename=f"{os.path.basename(path)}"
+                filename=f"photo_{photo_id}.jpg"
             )
     
     def create_share_session(self, student_id: int, expiry_hours: int = 24, 
                            download_limit: int = 50) -> str:
-        """Create a new ephemeral share session"""
+        """Create share session"""
         session_uuid = str(uuid.uuid4())
         
         self.active_sessions[session_uuid] = {
@@ -291,34 +393,29 @@ class LocalServer:
         
         return session_uuid
     
-    def get_session_info(self, session_uuid: str) -> Optional[dict]:
-        """Get info about a share session"""
-        return self.active_sessions.get(session_uuid)
-    
-    def cleanup_expired_sessions(self):
-        """Remove expired sessions"""
-        now = datetime.utcnow()
-        expired = [
-            uuid for uuid, data in self.active_sessions.items()
-            if now > data['expires_at']
-        ]
-        
-        for uuid in expired:
-            del self.active_sessions[uuid]
-        
-        return len(expired)
-    
     def start(self):
-        """Start the server in a background thread"""
+        """Start server"""
         if self.running:
             return
+        
+        print(f"\n→ Starting local server on port {self.port}...")
+        print(f"  Detecting network IP addresses...")
+        
+        all_ips = self.get_all_network_ips()
+        if all_ips:
+            print(f"\n  Available on:")
+            for ip_info in all_ips:
+                print(f"    • http://{ip_info['ip']}:{self.port} ({ip_info['interface']})")
+        else:
+            print(f"    • http://127.0.0.1:{self.port} (localhost only)")
         
         def run_server():
             config = uvicorn.Config(
                 self.app,
-                host="0.0.0.0",
+                host="0.0.0.0",  # Listen on all interfaces
                 port=self.port,
-                log_level="warning"
+                log_level="warning",
+                access_log=False
             )
             server = uvicorn.Server(config)
             server.run()
@@ -328,28 +425,21 @@ class LocalServer:
         self.running = True
     
     def stop(self):
-        """Stop the server"""
+        """Stop server"""
         self.running = False
     
     def is_running(self) -> bool:
-        """Check if server is running"""
+        """Check if running"""
         return self.running
     
     def get_port(self) -> int:
-        """Get server port"""
+        """Get port"""
         return self.port
     
-    def get_local_ip(self) -> str:
-        """Get local IP address"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
-    
     def get_share_url(self, session_uuid: str) -> str:
-        """Get full URL for sharing"""
+        """Get share URL"""
         return f"http://{self.get_local_ip()}:{self.port}/student/{session_uuid}"
+
+
+# Alias
+LocalServer = FixedLocalServer
