@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block title %}Share Photos - TLP Photo App{% endblock %}
+
+{% block extra_css %}
+<style>
+    .two-column {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 30px;
+    }
+    
+    .qr-display {
+        margin: 20px 0;
+        text-align: center;
+    }
+    
+    .qr-display canvas {
+        border: 2px solid #E8E8E8;
+        border-radius: 8px;
+        max-width: 300px;
+    }
+    
+    .share-url {
+        background: #F8F9FA;
+        padding: 15px;
+        border-radius: 8px;
+        word-break: break-all;
+        font-family: monospace;
+        font-size: 13px;
+        margin: 15px 0;
+    }
+    
+    @media (max-width: 768px) {
+        .two-column {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>📱 Share Photos via QR Code</h1>
+</div>
+
+{% if not session %}
+<div class="alert alert-info">
+    ⚠ No active session. Please create or select a session first.
+</div>
+{% else %}
+
+<div class="alert alert-info">
+    ℹ️ This feature requires the local server to be running. Share links work only on your local network.
+</div>
+
+<div class="two-column">
+    <div class="card">
+        <h2>Generate Share Link</h2>
+        
+        <form id="generateForm" onsubmit="generateQR(event)">
+            <div class="form-group">
+                <label>Student State Code *</label>
+                <input type="text" id="stateCodeInput" class="form-control" 
+                       placeholder="Enter state code..." required>
+                <button type="button" class="btn btn-primary" 
+                        style="margin-top: 10px; width: 100%;" onclick="searchStudent()">
+                    🔍 Find Student
+                </button>
+            </div>
+            
+            <div id="studentInfo" style="display: none; background: #E8F8F5; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                <p style="margin: 5px 0;"><strong id="studentName"></strong></p>
+                <p style="margin: 5px 0; color: #7F8C8D;" id="studentPhotos"></p>
+            </div>
+            
+            <div class="form-group">
+                <label>Link Expiry (hours)</label>
+                <input type="number" id="expiryHours" class="form-control" 
+                       value="24" min="1" max="168">
+            </div>
+            
+            <div class="form-group">
+                <label>Download Limit</label>
+                <input type="number" id="downloadLimit" class="form-control" 
+                       value="50" min="1" max="1000">
+            </div>
+            
+            <button type="submit" class="btn btn-success" style="width: 100%;">
+                📱 Generate QR Code
+            </button>
+        </form>
+        
+        <div id="qrResult" style="display: none; margin-top: 30px;">
+            <h3 style="text-align: center; margin-bottom: 20px;">QR Code</h3>
+            <div class="qr-display">
+                <div id="qrcode"></div>
+            </div>
+            
+            <div class="share-url" id="shareUrl"></div>
+            
+            <button class="btn btn-primary" style="width: 100%;" onclick="copyURL()">
+                📋 Copy URL
+            </button>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>Active Share Sessions</h2>
+        <div id="sessionsContainer">
+            <p class="loading">Loading sessions...</p>
+        </div>
+    </div>
+</div>
+
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script>
+    let currentStudent = null;
+    let shareURL = '';
+    
+    async function searchStudent() {
+        const stateCode = document.getElementById('stateCodeInput').value.trim();
+        
+        if (!stateCode) {
+            showMessage('Please enter a state code', 'error');
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/students');
+            const students = await response.json();
+            
+            const student = students.find(s => 
+                s.state_code.toLowerCase() === stateCode.toLowerCase()
+            );
+            
+            if (!student) {
+                showMessage('Student not found', 'error');
+                document.getElementById('studentInfo').style.display = 'none';
+                currentStudent = null;
+                return;
+            }
+            
+            currentStudent = student;
+            
+            // Show student info
+            document.getElementById('studentName').textContent = 
+                `${student.full_name} (${student.state_code})`;
+            document.getElementById('studentPhotos').textContent = 
+                `Photos available: ${student.photo_count || 0}`;
+            document.getElementById('studentInfo').style.display = 'block';
+            
+            showMessage('Student found!', 'success');
+            
+        } catch (error) {
+            showMessage('Failed to search student', 'error');
+        }
+    }
+    
+    async function generateQR(event) {
+        event.preventDefault();
+        
+        if (!currentStudent) {
+            showMessage('Please search for a student first', 'error');
+            return;
+        }
+        
+        const expiryHours = document.getElementById('expiryHours').value;
+        const downloadLimit = document.getElementById('downloadLimit').value;
+        
+        showMessage('Generating QR code...', 'info');
+        
+        // Note: This is a placeholder. You'll need to implement the actual
+        // share session creation in the backend
+        
+        // For demo, create a local URL
+        shareURL = `http://localhost:8080/student/${currentStudent.id}`;
+        
+        // Generate QR code
+        document.getElementById('qrcode').innerHTML = '';
+        
+        const qrcode = new QRCode(document.getElementById('qrcode'), {
+            text: shareURL,
+            width: 280,
+            height: 280,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.H
+        });
+        
+        // Show URL
+        document.getElementById('shareUrl').textContent = shareURL;
+        document.getElementById('qrResult').style.display = 'block';
+        
+        showMessage('QR code generated!', 'success');
+    }
+    
+    function copyURL() {
+        navigator.clipboard.writeText(shareURL).then(() => {
+            showMessage('URL copied to clipboard!', 'success');
+        }).catch(() => {
+            showMessage('Failed to copy URL', 'error');
+        });
+    }
+    
+    function loadActiveSessions() {
+        // Placeholder for loading active sessions
+        document.getElementById('sessionsContainer').innerHTML = `
+            <p style="text-align: center; color: #7F8C8D; padding: 40px;">
+                No active share sessions
+            </p>
+        `;
+    }
+    
+    // Load on page load
+    loadActiveSessions();
+</script>
+{% endblock %}

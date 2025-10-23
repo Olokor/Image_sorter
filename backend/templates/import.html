@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}Import Photos - TLP Photo App{% endblock %}
+
+{% block extra_css %}
+<style>
+    .drop-zone {
+        border: 3px dashed #3498DB;
+        border-radius: 12px;
+        padding: 60px 20px;
+        text-align: center;
+        background: #F8F9FA;
+        cursor: pointer;
+        transition: all 0.3s;
+    }
+    
+    .drop-zone:hover, .drop-zone.drag-over {
+        background: #E8F4FD;
+        border-color: #2980B9;
+    }
+    
+    .drop-zone h3 {
+        color: #3498DB;
+        margin-bottom: 10px;
+    }
+    
+    .drop-zone p {
+        color: #7F8C8D;
+        margin: 5px 0;
+    }
+    
+    .progress-container {
+        margin-top: 20px;
+        display: none;
+    }
+    
+    .progress-bar-container {
+        background: #E8E8E8;
+        border-radius: 8px;
+        height: 30px;
+        overflow: hidden;
+        margin-bottom: 10px;
+    }
+    
+    .progress-bar {
+        background: linear-gradient(90deg, #3498DB 0%, #2ECC71 100%);
+        height: 100%;
+        width: 0%;
+        transition: width 0.3s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 600;
+        font-size: 14px;
+    }
+    
+    .log-container {
+        background: #2C3E50;
+        color: #ECF0F1;
+        padding: 20px;
+        border-radius: 8px;
+        font-family: 'Courier New', monospace;
+        font-size: 13px;
+        max-height: 400px;
+        overflow-y: auto;
+        line-height: 1.6;
+    }
+    
+    .log-entry {
+        margin: 5px 0;
+    }
+    
+    .log-success { color: #2ECC71; }
+    .log-error { color: #E74C3C; }
+    .log-warning { color: #F39C12; }
+    .log-info { color: #3498DB; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>📷 Import & Process Photos</h1>
+</div>
+
+{% if not session %}
+<div class="alert alert-info">
+    ⚠ No active session. Please create or select a session first.
+</div>
+{% else %}
+
+<div class="card">
+    <h2>Instructions</h2>
+    <ol style="line-height: 2; color: #34495E;">
+        <li>Ensure students are enrolled before importing photos</li>
+        <li>Drag & drop photos or click to select</li>
+        <li>Wait for processing to complete</li>
+        <li>Review unmatched faces in the Review page if needed</li>
+    </ol>
+</div>
+
+<div class="card">
+    <h2>Upload Photos</h2>
+    
+    <div class="drop-zone" id="dropZone">
+        <h3>📁 Drag & Drop Photos Here</h3>
+        <p>or click to browse</p>
+        <p style="font-size: 12px; margin-top: 10px;">Supports: JPG, JPEG, PNG</p>
+        <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
+    </div>
+    
+    <div id="selectedFiles" style="margin-top: 20px; display: none;">
+        <h3>Selected Files: <span id="fileCount">0</span></h3>
+        <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <button class="btn btn-success" onclick="startImport()">
+                ✓ Start Import & Processing
+            </button>
+            <button class="btn btn-danger" onclick="clearFiles()">
+                Clear Files
+            </button>
+        </div>
+    </div>
+    
+    <div class="progress-container" id="progressContainer">
+        <h3>Processing Photos...</h3>
+        <div class="progress-bar-container">
+            <div class="progress-bar" id="progressBar">0%</div>
+        </div>
+        <p id="progressText" style="color: #7F8C8D; text-align: center;">Initializing...</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Processing Log</h2>
+    <div class="log-container" id="logContainer">
+        <div class="log-entry log-info">Ready to import photos...</div>
+    </div>
+    <button class="btn btn-primary" style="margin-top: 15px;" onclick="clearLog()">
+        Clear Log
+    </button>
+</div>
+
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let selectedFiles = [];
+    
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    
+    // Click to select files
+    dropZone.addEventListener('click', () => fileInput.click());
+    
+    // Drag and drop
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+    });
+    
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('drag-over');
+    });
+    
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        
+        const files = Array.from(e.dataTransfer.files).filter(f => 
+            f.type.startsWith('image/')
+        );
+        
+        handleFiles(files);
+    });
+    
+    fileInput.addEventListener('change', (e) => {
+        handleFiles(Array.from(e.target.files));
+    });
+    
+    function handleFiles(files) {
+        selectedFiles = files;
+        
+        if (files.length > 0) {
+            document.getElementById('selectedFiles').style.display = 'block';
+            document.getElementById('fileCount').textContent = files.length;
+            log(`✓ Selected ${files.length} photo(s)`, 'success');
+        }
+    }
+    
+    function clearFiles() {
+        selectedFiles = [];
+        fileInput.value = '';
+        document.getElementById('selectedFiles').style.display = 'none';
+        log('✗ Files cleared', 'warning');
+    }
+    
+    async function startImport() {
+        if (selectedFiles.length === 0) {
+            showMessage('No files selected', 'error');
+            return;
+        }
+        
+        const formData = new FormData();
+        selectedFiles.forEach(file => {
+            formData.append('photos', file);
+        });
+        
+        // Show progress
+        const progressContainer = document.getElementById('progressContainer');
+        progressContainer.style.display = 'block';
+        
+        log(`\n${'='.repeat(60)}`, 'info');
+        log(`Starting import of ${selectedFiles.length} photo(s)...`, 'info');
+        log('='.repeat(60), 'info');
+        
+        try {
+            const response = await fetch('/api/import', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                updateProgress(100, 'Complete!');
+                
+                log(`\n${'='.repeat(60)}`, 'success');
+                log('IMPORT COMPLETED', 'success');
+                log('='.repeat(60), 'success');
+                log(`✓ Processed: ${data.processed}`, 'success');
+                log(`⊘ Skipped (duplicates): ${data.skipped}`, 'warning');
+                log(`👤 Faces detected: ${data.faces_detected}`, 'info');
+                log(`✓ Faces matched: ${data.faces_matched}`, 'success');
+                
+                const unmatched = data.faces_detected - data.faces_matched;
+                if (unmatched > 0) {
+                    log(`⚠ Unmatched faces: ${unmatched}`, 'warning');
+                    log('→ Check Review page for manual matching', 'info');
+                }
+                
+                showMessage('Import completed successfully!', 'success');
+                
+                // Clear files after successful import
+                setTimeout(() => {
+                    clearFiles();
+                    progressContainer.style.display = 'none';
+                }, 3000);
+            }
+        } catch (error) {
+            log(`✗ Error: ${error.message}`, 'error');
+            showMessage('Import failed: ' + error.message, 'error');
+        }
+    }
+    
+    function updateProgress(percent, text) {
+        const bar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        
+        bar.style.width = percent + '%';
+        bar.textContent = Math.round(percent) + '%';
+        progressText.textContent = text;
+    }
+    
+    function log(message, type = 'info') {
+        const container = document.getElementById('logContainer');
+        const entry = document.createElement('div');
+        entry.className = `log-entry log-${type}`;
+        entry.textContent = message;
+        container.appendChild(entry);
+        
+        // Auto-scroll to bottom
+        container.scrollTop = container.scrollHeight;
+    }
+    
+    function clearLog() {
+        const container = document.getElementById('logContainer');
+        container.innerHTML = '<div class="log-entry log-info">Log cleared...</div>';
+    }
+</script>
+{% endblock %}

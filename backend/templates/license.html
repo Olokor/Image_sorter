@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}License - TLP Photo App{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>💳 License & Payment</h1>
+</div>
+
+<div class="card">
+    <h2>License Status</h2>
+    <table style="width: 100%; max-width: 600px;">
+        <tr>
+            <td><strong>Status:</strong></td>
+            <td>
+                {% if license.valid %}
+                    <span style="color: #2ECC71; font-weight: 600;">✓ Active</span>
+                {% else %}
+                    <span style="color: #E74C3C; font-weight: 600;">✗ Expired</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><strong>Photographer:</strong></td>
+            <td>{{ photographer.name }} ({{ photographer.email }})</td>
+        </tr>
+        <tr>
+            <td><strong>Valid Until:</strong></td>
+            <td>{{ license.expires }}</td>
+        </tr>
+        <tr>
+            <td><strong>Days Remaining:</strong></td>
+            <td>
+                <span style="
+                    {% if license.days_remaining < 7 %}color: #E74C3C;
+                    {% elif license.days_remaining < 14 %}color: #F39C12;
+                    {% else %}color: #2ECC71;{% endif %}
+                    font-weight: 600;">
+                    {{ license.days_remaining }} days
+                </span>
+            </td>
+        </tr>
+    </table>
+</div>
+
+{% if session %}
+<div class="card">
+    <h2>Current Session Billing</h2>
+    <table style="width: 100%; max-width: 600px;">
+        <tr>
+            <td><strong>Session:</strong></td>
+            <td>{{ session.name }}</td>
+        </tr>
+        <tr>
+            <td><strong>Students Enrolled:</strong></td>
+            <td>{{ session.student_count }}</td>
+        </tr>
+        <tr>
+            <td><strong>Amount Due:</strong></td>
+            <td>
+                {% if session.is_free_trial %}
+                    <span style="color: #2ECC71; font-weight: 600;">₦0.00 (Free Trial)</span>
+                {% else %}
+                    <span style="color: #E67E22; font-weight: 600;">
+                        ₦{{ (session.student_count * 200)|round(2) }}
+                    </span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><strong>Payment Status:</strong></td>
+            <td>
+                {% if session.payment_verified %}
+                    <span style="color: #2ECC71; font-weight: 600;">✓ Paid</span>
+                {% elif session.is_free_trial %}
+                    <span style="color: #3498DB;">Free Trial</span>
+                {% else %}
+                    <span style="color: #F39C12; font-weight: 600;">⚠ Pending Payment</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+    <button class="btn btn-success" style="height: 60px; font-size: 16px;" onclick="showPaymentInfo()">
+        💰 Pay for Session
+    </button>
+    <button class="btn btn-primary" style="height: 60px; font-size: 16px;" onclick="showRenewalInfo()">
+        🔄 Renew License
+    </button>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Payment Information</h2>
+    <div style="line-height: 2; color: #34495E;">
+        <h3 style="margin-top: 0;">Pricing</h3>
+        <ul>
+            <li><strong>First session:</strong> Free trial</li>
+            <li><strong>Subsequent sessions:</strong> ₦200 per enrolled student</li>
+            <li><strong>License validity:</strong> 30 days from activation</li>
+            <li><strong>Payment method:</strong> Paystack (online)</li>
+        </ul>
+        
+        <div class="alert alert-info" style="margin-top: 20px;">
+            <strong>Note:</strong> Full payment integration requires cloud backend deployment. 
+            Currently running in local mode.
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function showPaymentInfo() {
+        {% if not session %}
+            alert('No active session');
+            return;
+        {% endif %}
+        
+        {% if session.is_free_trial %}
+            alert('This is a free trial session - no payment required!');
+            return;
+        {% endif %}
+        
+        {% if session.payment_verified %}
+            alert('This session has already been paid for!');
+            return;
+        {% endif %}
+        
+        const amount = {{ session.student_count * 200 }};
+        
+        const message = `
+Session: {{ session.name }}
+Students: {{ session.student_count }}
+Amount: ₦${amount.toFixed(2)}
+
+Payment integration coming soon!
+This will:
+1. Close the session
+2. Generate payment link
+3. Open Paystack checkout
+4. Verify payment via webhook
+5. Update license for next session
+
+For now, sessions can be used without payment.
+        `;
+        
+        alert(message);
+    }
+    
+    function showRenewalInfo() {
+        const message = `
+License Renewal
+
+Current Status: {% if license.valid %}Active{% else %}Expired{% endif %}
+Days Remaining: {{ license.days_remaining }}
+
+License renewal feature coming soon!
+
+This will connect to the cloud backend and initiate
+a Paystack payment for license extension.
+
+For now, your license is valid for 30 days from activation.
+        `;
+        
+        alert(message);
+    }
+</script>
+{% endblock %}

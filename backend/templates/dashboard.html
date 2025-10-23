@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - TLP Photo App{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>📊 Dashboard</h1>
+    <button class="btn btn-primary" onclick="showNewSessionModal()">+ New Session</button>
+</div>
+
+{% if not session %}
+<div class="card">
+    <h2>No Active Session</h2>
+    <p>Create a new session to get started.</p>
+    <button class="btn btn-success" onclick="showNewSessionModal()">Create Session</button>
+</div>
+{% else %}
+
+<div class="stats-grid">
+    <div class="stat-card blue">
+        <h3>{{ stats.students or 0 }}</h3>
+        <p>Students Enrolled</p>
+    </div>
+    <div class="stat-card green">
+        <h3>{{ stats.photos or 0 }}</h3>
+        <p>Photos Processed</p>
+    </div>
+    <div class="stat-card purple">
+        <h3>{{ stats.total_faces or 0 }}</h3>
+        <p>Faces Detected</p>
+    </div>
+    <div class="stat-card orange">
+        <h3>{{ stats.matched_faces or 0 }}</h3>
+        <p>Faces Matched</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Session Information</h2>
+    <table>
+        <tr>
+            <td><strong>Name:</strong></td>
+            <td>{{ session.name }}</td>
+        </tr>
+        <tr>
+            <td><strong>Location:</strong></td>
+            <td>{{ session.location or 'Not specified' }}</td>
+        </tr>
+        <tr>
+            <td><strong>Started:</strong></td>
+            <td>{{ session.start_date.strftime('%Y-%m-%d %H:%M') }}</td>
+        </tr>
+        <tr>
+            <td><strong>Status:</strong></td>
+            <td>
+                {% if session.is_active %}
+                    <span style="color: #2ECC71;">🟢 Active</span>
+                {% else %}
+                    <span style="color: #E74C3C;">🔴 Closed</span>
+                {% endif %}
+                {% if session.is_free_trial %}
+                    <span style="color: #3498DB;">(Free Trial)</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Quick Actions</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+        <a href="/enroll" class="btn btn-primary">👤 Enroll Students</a>
+        <a href="/import" class="btn btn-primary">📷 Import Photos</a>
+        <a href="/review" class="btn btn-primary">✓ Review Matches</a>
+        <a href="/share" class="btn btn-primary">📱 Generate QR Codes</a>
+    </div>
+</div>
+
+{% endif %}
+
+<div class="card">
+    <h2>All Sessions</h2>
+    {% if sessions %}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Location</th>
+                <th>Started</th>
+                <th>Students</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in sessions %}
+            <tr>
+                <td><strong>{{ s.name }}</strong></td>
+                <td>{{ s.location or '-' }}</td>
+                <td>{{ s.start_date.strftime('%Y-%m-%d') }}</td>
+                <td>{{ s.student_count }}</td>
+                <td>
+                    {% if s.is_active %}
+                        <span style="color: #2ECC71;">Active</span>
+                    {% else %}
+                        <span style="color: #95A5A6;">Closed</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if not s.is_active %}
+                    <button class="btn btn-primary" style="padding: 8px 16px; font-size: 12px;" onclick="activateSession({{ s.id }})">
+                        Activate
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #7F8C8D; text-align: center; padding: 20px;">No sessions yet</p>
+    {% endif %}
+</div>
+
+<!-- Modal for New Session -->
+<div id="newSessionModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+    <div class="card" style="max-width: 500px; margin: 0;">
+        <h2>Create New Session</h2>
+        <form id="newSessionForm" onsubmit="createSession(event)">
+            <div class="form-group">
+                <label>Session Name *</label>
+                <input type="text" name="name" class="form-control" required placeholder="e.g., Summer Camp 2025">
+            </div>
+            <div class="form-group">
+                <label>Location</label>
+                <input type="text" name="location" class="form-control" placeholder="e.g., Lagos">
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn btn-success">Create Session</button>
+                <button type="button" class="btn btn-danger" onclick="hideNewSessionModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function showNewSessionModal() {
+        const modal = document.getElementById('newSessionModal');
+        modal.style.display = 'flex';
+    }
+    
+    function hideNewSessionModal() {
+        const modal = document.getElementById('newSessionModal');
+        modal.style.display = 'none';
+        document.getElementById('newSessionForm').reset();
+    }
+    
+    async function createSession(event) {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        
+        try {
+            const response = await fetch('/api/sessions', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                showMessage(data.message, 'success');
+                hideNewSessionModal();
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                showMessage(data.message, 'error');
+            }
+        } catch (error) {
+            showMessage('Failed to create session', 'error');
+        }
+    }
+    
+    async function activateSession(sessionId) {
+        try {
+            const response = await fetch(`/api/sessions/${sessionId}/activate`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                showMessage('Session activated', 'success');
+                setTimeout(() => window.location.reload(), 1000);
+            }
+        } catch (error) {
+            showMessage('Failed to activate session', 'error');
+        }
+    }
+    </script>
+{% endblock %}

@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block title %}Review Matches - TLP Photo App{% endblock %}
+
+{% block extra_css %}
+<style>
+    .review-container {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 30px;
+    }
+    
+    .face-viewer {
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        text-align: center;
+    }
+    
+    .face-image {
+        max-width: 100%;
+        max-height: 500px;
+        border-radius: 8px;
+        border: 3px solid #E8E8E8;
+    }
+    
+    .match-info {
+        background: #F8F9FA;
+        padding: 20px;
+        border-radius: 8px;
+        margin: 20px 0;
+        text-align: left;
+    }
+    
+    .match-info p {
+        margin: 10px 0;
+        color: #2C3E50;
+    }
+    
+    .student-selector {
+        margin: 20px 0;
+    }
+    
+    .action-buttons {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+    }
+    
+    .action-buttons button {
+        flex: 1;
+        padding: 15px;
+        font-size: 16px;
+    }
+    
+    @media (max-width: 768px) {
+        .review-container {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>✓ Review Face Matches</h1>
+</div>
+
+{% if not session %}
+<div class="alert alert-info">
+    ⚠ No active session. Please create or select a session first.
+</div>
+{% else %}
+
+<div id="statusMessage" class="alert alert-success" style="display: none;"></div>
+
+<div class="review-container">
+    <div class="card face-viewer">
+        <h2>Face to Review</h2>
+        <div id="faceContainer">
+            <p class="loading">Loading faces...</p>
+        </div>
+    </div>
+    
+    <div>
+        <div class="card">
+            <h2>Review Progress</h2>
+            <p id="progressText" style="font-size: 18px; font-weight: 600; color: #3498DB;">
+                Loading...
+            </p>
+            
+            <div class="action-buttons" style="margin-top: 30px;">
+                <button class="btn btn-primary" onclick="previousFace()" id="prevBtn">
+                    ⬅ Previous
+                </button>
+                <button class="btn btn-primary" onclick="nextFace()" id="nextBtn">
+                    Skip ⏭
+                </button>
+            </div>
+            
+            <button class="btn btn-success" style="width: 100%; margin-top: 15px;" onclick="refreshReview()">
+                🔄 Refresh List
+            </button>
+        </div>
+    </div>
+</div>
+
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let faces = [];
+    let currentIndex = 0;
+    let students = [];
+    
+    async function loadReview() {
+        try {
+            // Load faces needing review
+            const facesResponse = await fetch('/api/review/faces');
+            faces = await facesResponse.json();
+            
+            // Load students
+            const studentsResponse = await fetch('/api/students');
+            students = await studentsResponse.json();
+            
+            if (faces.length === 0) {
+                document.getElementById('faceContainer').innerHTML = `
+                    <div style="padding: 60px 20px;">
+                        <h2 style="color: #2ECC71;">✓ All Done!</h2>
+                        <p style="color: #7F8C8D; margin-top: 10px;">
+                            No faces need review. All matches have been confirmed.
+                        </p>
+                    </div>
+                `;
+                document.getElementById('progressText').textContent = '✓ All faces reviewed';
+                return;
+            }
+            
+            showCurrentFace();
+            
+        } catch (error) {
+            console.error('Error loading review data:', error);
+            showMessage('Failed to load review data', 'error');
+        }
+    }
+    
+    function showCurrentFace() {
+        if (!faces.length) return;
+        
+        const face = faces[currentIndex];
+        
+        // Update progress
+        document.getElementById('progressText').textContent = 
+            `Face ${currentIndex + 1} of ${faces.length}`;
+        
+        // Build face view
+        let html = `
+            <img src="/photo/${face.photo_id}" class="face-image" alt="Face">
+            
+            <div class="match-info">
+                <p><strong>Confidence:</strong> ${(face.match_confidence * 100).toFixed(1)}%</p>
+        `;
+        
+        if (face.suggested_student) {
+            html += `
+                <p><strong>Suggested Match:</strong> ${face.suggested_student.name}</p>
+                <p><strong>State Code:</strong> ${face.suggested_student.state_code}</p>
+            `;
+        } else {
+            html += `<p style="color: #E67E22;"><strong>No match found</strong></p>`;
+        }
+        
+        html += `</div>`;
+        
+        // Student selector
+        html += `
+            <div class="student-selector">
+                <label style="display: block; margin-bottom: 10px; font-weight: 600;">
+                    Assign to Student:
+                </label>
+                <select id="studentSelect" class="form-control" style="margin-bottom: 15px;">
+                    <option value="">-- Select Student --</option>
+        `;
+        
+        students.forEach(student => {
+            const selected = face.suggested_student && 
+                           face.suggested_student.id === student.id ? 'selected' : '';
+            html += `
+                <option value="${student.id}" ${selected}>
+                    ${student.full_name} (${student.state_code})
+                </option>
+            `;
+        });
+        
+        html += `
+                </select>
+                <button class="btn btn-success" style="width: 100%;" onclick="confirmMatch()">
+                    ✓ Confirm Match
+                </button>
+            </div>
+        `;
+        
+        document.getElementById('faceContainer').innerHTML = html;
+    }
+    
+    async function confirmMatch() {
+        const studentId = document.getElementById('studentSelect').value;
+        
+        if (!studentId) {
+            showMessage('Please select a student', 'error');
+            return;
+        }
+        
+        const face = faces[currentIndex];
+        
+        try {
+            const formData = new FormData();
+            formData.append('student_id', studentId);
+            
+            const response = await fetch(`/api/review/${face.id}/confirm`, {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                showMessage('Match confirmed!', 'success');
+                
+                // Remove from list and move to next
+                faces.splice(currentIndex, 1);
+                
+                if (faces.length === 0) {
+                    document.getElementById('faceContainer').innerHTML = `
+                        <div style="padding: 60px 20px;">
+                            <h2 style="color: #2ECC71;">✓ All Done!</h2>
+                            <p style="color: #7F8C8D; margin-top: 10px;">
+                                All faces have been reviewed!
+                            </p>
+                        </div>
+                    `;
+                    document.getElementById('progressText').textContent = '✓ All faces reviewed';
+                } else {
+                    if (currentIndex >= faces.length) {
+                        currentIndex = faces.length - 1;
+                    }
+                    showCurrentFace();
+                }
+            }
+            
+        } catch (error) {
+            showMessage('Failed to confirm match', 'error');
+        }
+    }
+    
+    function previousFace() {
+        if (currentIndex > 0) {
+            currentIndex--;
+            showCurrentFace();
+        }
+    }
+    
+    function nextFace() {
+        if (currentIndex < faces.length - 1) {
+            currentIndex++;
+            showCurrentFace();
+        }
+    }
+    
+    function refreshReview() {
+        currentIndex = 0;
+        loadReview();
+    }
+    
+    function showMessage(message, type) {
+        const msgDiv = document.getElementById('statusMessage');
+        msgDiv.className = `alert alert-${type}`;
+        msgDiv.textContent = message;
+        msgDiv.style.display = 'block';
+        
+        setTimeout(() => {
+            msgDiv.style.display = 'none';
+        }, 3000);
+    }
+    
+    // Load on page load
+    loadReview();
+</script>
+{% endblock %}
