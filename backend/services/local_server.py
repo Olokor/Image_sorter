@@ -26,7 +26,7 @@ class ImprovedLocalServer:
         self.running = False
         self.active_sessions = {}
         
-        self.app = FastAPI(title="TLP Photo Share")
+        self.app = FastAPI(title="Photo Share")
         self.setup_routes()
     
     def get_all_local_ips(self) -> List[Dict[str, str]]:
@@ -224,7 +224,7 @@ class ImprovedLocalServer:
                 )
             
             student_id = session_data['student_id']
-            student = self.app_service.db_session.query(Student).get(student_id)
+            student = self.app_service.db_session.get(Student, student_id)
             
             if not student:
                 return HTMLResponse(
@@ -248,7 +248,7 @@ class ImprovedLocalServer:
         @self.app.get("/photo/{photo_id}")
         async def serve_photo(photo_id: int):
             """Serve photo thumbnail"""
-            photo = self.app_service.db_session.query(Photo).get(photo_id)
+            photo = self.app_service.db_session.get(Photo, photo_id)
             
             if not photo:
                 raise HTTPException(status_code=404, detail="Photo not found")
@@ -275,7 +275,7 @@ class ImprovedLocalServer:
             if datetime.utcnow() > session_data['expires_at']:
                 raise HTTPException(status_code=410, detail="Session expired")
             
-            photo = self.app_service.db_session.query(Photo).get(photo_id)
+            photo = self.app_service.db_session.get(Photo, photo_id)
             
             if not photo:
                 raise HTTPException(status_code=404, detail="Photo not found")
@@ -291,7 +291,7 @@ class ImprovedLocalServer:
             
             # Update counters
             session_data['downloads_used'] += 1
-            student_photo.download_count += 1
+            student_photo.download_count = (student_photo.download_count or 0) + 1
             self.app_service.db_session.commit()
             
             path = photo.original_path
@@ -300,10 +300,12 @@ class ImprovedLocalServer:
                 raise HTTPException(status_code=404, detail="Photo file not found")
             
             return FileResponse(
-                path,
-                media_type='image/jpeg',
-                filename=f"photo_{photo_id}_{student_photo.student.state_code}.jpg"
-            )
+                    path,
+                    media_type="image/jpeg",
+                    filename=f"photo_{photo_id}_{student_photo.student.state_code}.jpg",
+                    headers={"Content-Disposition": f"attachment; filename=photo_{photo_id}.jpg"}
+)
+
     
     def build_gallery_page(self, student, photos, session_data, session_uuid) -> str:
         """Build HTML gallery page"""

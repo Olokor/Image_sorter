@@ -122,38 +122,74 @@
         </div>
         
         {% if students %}
-        <div style="max-height: 600px; overflow-y: auto;">
-            <table id="studentsTable">
-                <thead>
-                    <tr>
-                        <th>State Code</th>
-                        <th>Name</th>
-                        <th>Photos</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for student in students %}
-                    <tr>
-                        <td><strong>{{ student.state_code }}</strong></td>
-                        <td>{{ student.full_name }}</td>
-                        <td>
-                            {% set photo_count = student.reference_photo_path.split(',')|length if student.reference_photo_path else 0 %}
-                            📷 {{ photo_count }}
-                        </td>
-                        <td>
-                            <button class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="deleteStudent({{ student.id }}, '{{ student.full_name }}')">
-                                🗑 Delete
-                            </button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <p style="text-align: center; color: #7F8C8D; padding: 40px;">No students enrolled yet</p>
-        {% endif %}
+<div style="max-height: 600px; overflow-y: auto;">
+    <table id="studentsTable">
+        <thead>
+            <tr>
+                <th>State Code</th>
+                <th>Name</th>
+                <th>Enrollment</th>
+                <th>Gallery</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for student in students %}
+            <tr>
+                <td><strong>{{ student.state_code }}</strong></td>
+                <td>{{ student.full_name }}</td>
+                <td>
+                    {% set ref_count = student.reference_photo_path.split(',')|length if student.reference_photo_path else 0 %}
+                    <span title="Enrollment photos">📝 {{ ref_count }}</span>
+                </td>
+                <td>
+                    <span title="Gallery photos (matched)">📷 <span class="gallery-photo-count" data-student-id="{{ student.id }}">...</span></span>
+                </td>
+                <td>
+                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="deleteStudent({{ student.id }}, '{{ student.full_name }}')">
+                        🗑 Delete
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+// Load actual gallery photo counts for each student
+async function loadGalleryPhotoCounts() {
+    try {
+        const response = await fetch('/api/students');
+        const students = await response.json();
+        
+        students.forEach(student => {
+            const countElement = document.querySelector(`[data-student-id="${student.id}"]`);
+            if (countElement) {
+                countElement.textContent = student.photo_count || 0;
+                
+                // Color code based on count
+                if (student.photo_count > 0) {
+                    countElement.style.color = '#2ECC71';
+                    countElement.style.fontWeight = 'bold';
+                } else {
+                    countElement.style.color = '#E74C3C';
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Failed to load photo counts:', error);
+    }
+}
+
+// Load counts when page loads
+if (document.getElementById('studentsTable')) {
+    loadGalleryPhotoCounts();
+}
+</script>
+{% else %}
+<p style="text-align: center; color: #7F8C8D; padding: 40px;">No students enrolled yet</p>
+{% endif %}
     </div>
 </div>
 

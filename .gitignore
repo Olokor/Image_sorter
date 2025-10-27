@@ -208,3 +208,7 @@ __marimo__/
 /images2
 /images
 client/preprocessed_images
+client/tlp_photos.db
+backend/tlp_photos.db
+backend/uploads
+backend/processed_photos
