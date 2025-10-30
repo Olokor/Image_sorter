@@ -1,7 +1,6 @@
 """
-TLP Photo App - Web-Based GUI Version
+TLP Photo App - Web-Based GUI Version with Authentication
 FastAPI + HTML/CSS/JS frontend
-Can be bundled to .exe with PyInstaller
 """
 import sys
 import os
@@ -9,13 +8,15 @@ import webbrowser
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import uvicorn
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, Depends, Cookie
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from typing import List, Optional
+import secrets
 
 # Add client directory to path
 CLIENT_DIR = Path(__file__).parent
@@ -23,8 +24,7 @@ if str(CLIENT_DIR) not in sys.path:
     sys.path.insert(0, str(CLIENT_DIR))
 
 from services.app_service import EnhancedAppService
-from models import Student, Photo, CampSession
-
+from models import Student, Photo, CampSession, Photographer, DownloadRequest
 
 # Initialize FastAPI app
 app = FastAPI(title="Photo_Sorter App", version="1.0.0")
@@ -47,11 +47,168 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Setup templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# Session storage (in production, use Redis or database)
+active_sessions = {}
 
-# ==================== API ROUTES ====================
+def generate_session_token():
+    """Generate secure session token"""
+    return secrets.token_urlsafe(32)
+
+def get_current_photographer(session_token: Optional[str] = Cookie(None)):
+    """Dependency to get current logged-in photographer"""
+    if not session_token or session_token not in active_sessions:
+        return None
+    
+    photographer_id = active_sessions[session_token]['photographer_id']
+    photographer = app_service.db_session.query(Photographer).get(photographer_id)
+    
+    if photographer and photographer.is_active:
+        return photographer
+    
+    return None
+
+def require_auth(session_token: Optional[str] = Cookie(None)):
+    """Dependency to require authentication"""
+    photographer = get_current_photographer(session_token)
+    if not photographer:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return photographer
+
+
+# ==================== AUTHENTICATION ROUTES ====================
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Login/Signup page"""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/api/auth/signup")
+async def signup(
+    name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    phone: Optional[str] = Form(None)
+):
+    """Register new photographer"""
+    # Check if email exists
+    existing = app_service.db_session.query(Photographer).filter(
+        Photographer.email == email
+    ).first()
+    
+    if existing:
+        return {"success": False, "message": "Email already registered"}
+    
+    # Create photographer
+    photographer = Photographer(
+        name=name,
+        email=email,
+        phone=phone,
+        license_valid_until=datetime.utcnow() + timedelta(days=30)
+    )
+    photographer.set_password(password)
+    
+    app_service.db_session.add(photographer)
+    app_service.db_session.commit()
+    
+    # Create session
+    session_token = generate_session_token()
+    active_sessions[session_token] = {
+        'photographer_id': photographer.id,
+        'created_at': datetime.utcnow(),
+        'last_activity': datetime.utcnow()
+    }
+    
+    # Update app_service
+    app_service.current_photographer = photographer
+    
+    response = JSONResponse({
+        "success": True,
+        "message": "Account created successfully"
+    })
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=30*24*60*60  # 30 days
+    )
+    
+    return response
+
+@app.post("/api/auth/login")
+async def login(
+    email: str = Form(...),
+    password: str = Form(...)
+):
+    """Login photographer"""
+    photographer = app_service.db_session.query(Photographer).filter(
+        Photographer.email == email
+    ).first()
+    
+    if not photographer or not photographer.check_password(password):
+        return {"success": False, "message": "Invalid email or password"}
+    
+    if not photographer.is_active:
+        return {"success": False, "message": "Account is deactivated"}
+    
+    # Update last login
+    photographer.last_login = datetime.utcnow()
+    app_service.db_session.commit()
+    
+    # Create session
+    session_token = generate_session_token()
+    active_sessions[session_token] = {
+        'photographer_id': photographer.id,
+        'created_at': datetime.utcnow(),
+        'last_activity': datetime.utcnow()
+    }
+    
+    # Update app_service
+    app_service.current_photographer = photographer
+    
+    response = JSONResponse({
+        "success": True,
+        "message": "Login successful"
+    })
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=30*24*60*60  # 30 days
+    )
+    
+    return response
+
+@app.post("/api/auth/logout")
+async def logout(session_token: Optional[str] = Cookie(None)):
+    """Logout photographer"""
+    if session_token and session_token in active_sessions:
+        del active_sessions[session_token]
+    
+    response = JSONResponse({"success": True, "message": "Logged out"})
+    response.delete_cookie("session_token")
+    return response
+
+@app.get("/api/auth/me")
+async def get_current_user(photographer: Photographer = Depends(get_current_photographer)):
+    """Get current photographer info"""
+    if not photographer:
+        return {"authenticated": False}
+    
+    return {
+        "authenticated": True,
+        "photographer": {
+            "id": photographer.id,
+            "name": photographer.name,
+            "email": photographer.email,
+            "phone": photographer.phone
+        }
+    }
+
+
+# ==================== PROTECTED ROUTES ====================
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
+async def dashboard(request: Request, photographer: Photographer = Depends(require_auth)):
     """Main dashboard page"""
     session = app_service.get_active_session()
     stats = app_service.get_session_stats() if session else {}
@@ -66,7 +223,7 @@ async def dashboard(request: Request):
 
 
 @app.get("/api/sessions")
-async def get_sessions():
+async def get_sessions(photographer: Photographer = Depends(require_auth)):
     """Get all sessions"""
     sessions = app_service.get_all_sessions()
     return [{
@@ -81,7 +238,11 @@ async def get_sessions():
 
 
 @app.post("/api/sessions")
-async def create_session(name: str = Form(...), location: str = Form("")):
+async def create_session(
+    name: str = Form(...),
+    location: str = Form(""),
+    photographer: Photographer = Depends(require_auth)
+):
     """Create new session"""
     session = app_service.create_session(name, location)
     return {
@@ -92,14 +253,14 @@ async def create_session(name: str = Form(...), location: str = Form("")):
 
 
 @app.post("/api/sessions/{session_id}/activate")
-async def activate_session(session_id: int):
+async def activate_session(session_id: int, photographer: Photographer = Depends(require_auth)):
     """Set active session"""
     app_service.set_active_session(session_id)
     return {"success": True, "message": "Session activated"}
 
 
 @app.get("/enroll", response_class=HTMLResponse)
-async def enroll_page(request: Request):
+async def enroll_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """Student enrollment page"""
     session = app_service.get_active_session()
     students = app_service.get_students() if session else []
@@ -117,7 +278,8 @@ async def enroll_student(
     full_name: str = Form(...),
     email: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
-    photos: List[UploadFile] = File(...)
+    photos: List[UploadFile] = File(...),
+    photographer: Photographer = Depends(require_auth)
 ):
     """Enroll student with multiple photos"""
     session = app_service.get_active_session()
@@ -157,10 +319,7 @@ async def enroll_student(
 
 
 @app.get("/api/students")
-# Replace the existing /api/students route in backend/main.py with this:
-
-@app.get("/api/students")
-async def get_students():
+async def get_students(photographer: Photographer = Depends(require_auth)):
     """Get all students in current session with actual photo counts"""
     students = app_service.get_students()
     
@@ -183,22 +342,24 @@ async def get_students():
             "phone": s.phone,
             "registered_at": s.registered_at.isoformat(),
             "photo_count": actual_photo_count,  # Gallery photos (matched)
-            "reference_photo_count": ref_photo_count  # Enrollment photos
+            "reference_photo_count": ref_photo_count,  # Enrollment photos
+            "total_downloads": s.total_downloads or 0  # Total downloads
         })
     
     return result
 
+
 @app.delete("/api/students/{student_id}")
-async def delete_student(student_id: int):
+async def delete_student(student_id: int, photographer: Photographer = Depends(require_auth)):
     """Delete a student"""
     success = app_service.delete_student(student_id)
     if success:
         return {"success": True, "message": "Student deleted"}
-    raise HTTPException(404, "no student found")
+    raise HTTPException(404, "Student not found")
 
 
 @app.get("/import", response_class=HTMLResponse)
-async def import_page(request: Request):
+async def import_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """Photo import page"""
     session = app_service.get_active_session()
     return templates.TemplateResponse("import.html", {
@@ -208,7 +369,10 @@ async def import_page(request: Request):
 
 
 @app.post("/api/import")
-async def import_photos(photos: List[UploadFile] = File(...)):
+async def import_photos(
+    photos: List[UploadFile] = File(...),
+    photographer: Photographer = Depends(require_auth)
+):
     """Import and process photos"""
     session = app_service.get_active_session()
     if not session:
@@ -235,7 +399,7 @@ async def import_photos(photos: List[UploadFile] = File(...)):
 
 
 @app.get("/review", response_class=HTMLResponse)
-async def review_page(request: Request):
+async def review_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """Review matches page"""
     session = app_service.get_active_session()
     faces = app_service.get_faces_needing_review() if session else []
@@ -250,7 +414,7 @@ async def review_page(request: Request):
 
 
 @app.get("/api/review/faces")
-async def get_review_faces():
+async def get_review_faces(photographer: Photographer = Depends(require_auth)):
     """Get faces needing review with reference photos"""
     faces = app_service.get_faces_needing_review()
     result = []
@@ -291,7 +455,11 @@ async def get_review_faces():
 
 
 @app.get("/reference/{student_id}/{photo_index}")
-async def serve_reference_photo(student_id: int, photo_index: int):
+async def serve_reference_photo(
+    student_id: int,
+    photo_index: int,
+    photographer: Photographer = Depends(require_auth)
+):
     """Serve student reference photo"""
     student = app_service.db_session.query(Student).get(student_id)
     if not student or not student.reference_photo_path:
@@ -310,15 +478,20 @@ async def serve_reference_photo(student_id: int, photo_index: int):
     
     return FileResponse(photo_path)
 
+
 @app.post("/api/review/{face_id}/confirm")
-async def confirm_match(face_id: int, student_id: int = Form(...)):
+async def confirm_match(
+    face_id: int,
+    student_id: int = Form(...),
+    photographer: Photographer = Depends(require_auth)
+):
     """Confirm face match"""
     app_service.confirm_match(face_id, student_id)
     return {"success": True, "message": "Match confirmed"}
 
 
 @app.get("/share", response_class=HTMLResponse)
-async def share_page(request: Request):
+async def share_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """Share/QR page"""
     session = app_service.get_active_session()
     return templates.TemplateResponse("share.html", {
@@ -328,7 +501,7 @@ async def share_page(request: Request):
 
 
 @app.get("/photo/{photo_id}")
-async def serve_photo(photo_id: int):
+async def serve_photo(photo_id: int, photographer: Photographer = Depends(require_auth)):
     """Serve photo file"""
     photo = app_service.db_session.query(Photo).get(photo_id)
     if not photo:
@@ -342,14 +515,14 @@ async def serve_photo(photo_id: int):
 
 
 @app.get("/license", response_class=HTMLResponse)
-async def license_page(request: Request):
+async def license_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """License page with proper session handling"""
     try:
         license_info = app_service.check_license()
         session = app_service.get_active_session()
         
         # Get photographer info
-        photographer = app_service.current_photographer
+        photographer_data = photographer
         
         # If there's a session, calculate billing info
         billing_info = None
@@ -368,7 +541,7 @@ async def license_page(request: Request):
             "license": license_info,
             "session": session,
             "billing": billing_info,
-            "photographer": photographer
+            "photographer": photographer_data
         })
     except Exception as e:
         print(f"License page error: {e}")
@@ -378,41 +551,142 @@ async def license_page(request: Request):
             "license": {'valid': False, 'expires': 'Unknown', 'days_remaining': 0},
             "session": None,
             "billing": None,
-            "photographer": None
+            "photographer": photographer
         })
 
-# Add these routes to backend/main.py after the existing routes
+
+# ==================== DOWNLOAD REQUEST ROUTES ====================
+
+@app.get("/requests", response_class=HTMLResponse)
+async def requests_page(request: Request, photographer: Photographer = Depends(require_auth)):
+    """Download requests management page"""
+    session = app_service.get_active_session()
+    
+    # Get pending requests
+    pending_requests = app_service.db_session.query(DownloadRequest).filter(
+        DownloadRequest.status == 'pending'
+    ).order_by(DownloadRequest.requested_at.desc()).all()
+    
+    return templates.TemplateResponse("requests.html", {
+        "request": request,
+        "session": session,
+        "pending_requests": pending_requests
+    })
+
+
+@app.get("/api/requests/pending")
+async def get_pending_requests(photographer: Photographer = Depends(require_auth)):
+    """Get all pending download requests"""
+    requests = app_service.db_session.query(DownloadRequest).filter(
+        DownloadRequest.status == 'pending'
+    ).order_by(DownloadRequest.requested_at.desc()).all()
+    
+    result = []
+    for req in requests:
+        student = app_service.db_session.query(Student).get(req.student_id)
+        if student:
+            result.append({
+                "id": req.id,
+                "student_id": student.id,
+                "student_name": student.full_name,
+                "student_code": student.state_code,
+                "requested_at": req.requested_at.isoformat(),
+                "additional_downloads": req.additional_downloads,
+                "reason": req.reason,
+                "current_downloads": student.total_downloads
+            })
+    
+    return result
+
+
+@app.post("/api/requests/{request_id}/approve")
+async def approve_request(
+    request_id: int,
+    photographer: Photographer = Depends(require_auth)
+):
+    """Approve download request"""
+    req = app_service.db_session.query(DownloadRequest).get(request_id)
+    
+    if not req:
+        raise HTTPException(404, "Request not found")
+    
+    if req.status != 'pending':
+        return {"success": False, "message": "Request already processed"}
+    
+    # Update request
+    req.status = 'approved'
+    req.reviewed_at = datetime.utcnow()
+    req.reviewed_by = photographer.id
+    
+    # Update share session download limit
+    if hasattr(app_service, 'local_server') and req.share_session_uuid in app_service.local_server.active_sessions:
+        session_data = app_service.local_server.active_sessions[req.share_session_uuid]
+        session_data['download_limit'] += req.additional_downloads
+    
+    app_service.db_session.commit()
+    
+    return {
+        "success": True,
+        "message": f"Approved {req.additional_downloads} additional downloads"
+    }
+
+
+@app.post("/api/requests/{request_id}/reject")
+async def reject_request(
+    request_id: int,
+    photographer: Photographer = Depends(require_auth)
+):
+    """Reject download request"""
+    req = app_service.db_session.query(DownloadRequest).get(request_id)
+    
+    if not req:
+        raise HTTPException(404, "Request not found")
+    
+    if req.status != 'pending':
+        return {"success": False, "message": "Request already processed"}
+    
+    # Update request
+    req.status = 'rejected'
+    req.reviewed_at = datetime.utcnow()
+    req.reviewed_by = photographer.id
+    
+    app_service.db_session.commit()
+    
+    return {"success": True, "message": "Request rejected"}
+
+
+# ==================== SHARE ROUTES ====================
 
 @app.post("/api/share/create")
 async def create_share_session(
     state_code: str = Form(...),
     expiry_hours: int = Form(24),
-    download_limit: int = Form(50)
+    download_limit: int = Form(50),
+    photographer: Photographer = Depends(require_auth)
 ):
     """Create a share session for a student"""
     session = app_service.get_active_session()
     if not session:
         raise HTTPException(400, "No active session")
 
-    # ✅ Search student using service (not DB directly)
+    # Search student
     student = app_service.search_student(state_code)
-    print(f"student:{student}")
-    if student == None:
-        raise HTTPException(404, "no student found")
+    if not student:
+        raise HTTPException(404, "Student not found")
 
-    # ✅ Ensure student has photos
+    # Ensure student has photos
     photos = app_service.get_student_photos(student)
     if not photos:
         raise HTTPException(400, "Student has no gallery photos")
 
-    # ✅ Create local server for sharing if not started
+    # Create local server for sharing if not started
     from services.local_server import ImprovedLocalServer
     if not hasattr(app_service, 'local_server'):
         app_service.local_server = ImprovedLocalServer(app_service, port=8000)
         if not app_service.local_server.is_running():
             app_service.local_server.start()
 
-    # ✅ Create share session
+    # Create share session
     session_uuid = app_service.local_server.create_share_session(
         student_id=student.id,
         expiry_hours=expiry_hours,
@@ -421,7 +695,7 @@ async def create_share_session(
 
     share_url = app_service.local_server.get_share_url(session_uuid)
 
-    # ✅ Generate QR Code (Base64)
+    # Generate QR Code (Base64)
     import qrcode, base64
     from io import BytesIO
 
@@ -444,9 +718,8 @@ async def create_share_session(
     }
 
 
-
 @app.get("/api/share/sessions")
-async def get_share_sessions():
+async def get_share_sessions(photographer: Photographer = Depends(require_auth)):
     """Get all active share sessions"""
     if not hasattr(app_service, 'local_server'):
         return {"sessions": []}
@@ -470,7 +743,10 @@ async def get_share_sessions():
 
 
 @app.delete("/api/share/sessions/{session_uuid}")
-async def delete_share_session(session_uuid: str):
+async def delete_share_session(
+    session_uuid: str,
+    photographer: Photographer = Depends(require_auth)
+):
     """Delete a share session"""
     if hasattr(app_service, 'local_server'):
         if session_uuid in app_service.local_server.active_sessions:
@@ -479,151 +755,13 @@ async def delete_share_session(session_uuid: str):
     
     raise HTTPException(404, "Share session not found")
 
+
 # ==================== STARTUP & SHUTDOWN ====================
-
-
-
-"""
-Add these routes to backend/main.py after the existing routes
-This provides the complete share functionality
-"""
-
-# Add this import at the top with other imports
-import base64
-import uuid
-from datetime import datetime, timedelta
-from fastapi import Form, HTTPException, APIRouter
-from io import BytesIO
-import qrcode
-
-router_share = APIRouter(prefix="/api/share")
-
-# ✅ CREATE SHARE SESSION + QR CODE
-@router_share.post("/create")
-async def create_share_session(
-    state_code: str = Form(...),
-    expiry_hours: int = Form(24),
-    download_limit: int = Form(50),
-):
-    student = app_service.search_student(state_code)
-    if not student:
-        raise HTTPException(status_code=404, detail="no student found")
-
-    photo_count = len(student.gallery_photos.split(',')) if student.gallery_photos else 0
-    if photo_count == 0:
-        raise HTTPException(status_code=400, detail="Student has no gallery photos")
-
-    session_uuid = str(uuid.uuid4())
-    created_at = datetime.utcnow()
-    expires_at = created_at + timedelta(hours=expiry_hours)
-
-    # ✅ Build share URL
-    share_url = f"your-network-host/api/share/access/{session_uuid}"
-
-    new_session = ShareSession(
-        uuid=session_uuid,
-        student_id=student.id,
-        created_at=created_at,
-        expires_at=expires_at,
-        download_limit=download_limit
-    )
-    db.add(new_session)
-    db.commit()
-
-    # ✅ Generate QR Code (Base64 PNG)
-    qr_image = qrcode.make(share_url)
-    buffer = BytesIO()
-    qr_image.save(buffer, format="PNG")
-    qr_base64 = base64.b64encode(buffer.getvalue()).decode()
-
-    return {
-        "success": True,
-        "session_uuid": session_uuid,
-        "share_url": share_url,
-        "qr_code": f"data:image/png;base64,{qr_base64}",
-        "student": {
-            "id": student.id,
-            "name": student.full_name,
-            "state_code": student.state_code,
-            "photo_count": photo_count
-        }
-    }
-
-
-# ✅ GET ACTIVE SESSIONS
-@router_share.get("/sessions")
-async def get_active_sessions():
-    sessions = db.query(ShareSession).all()
-
-    response = []
-    for s in sessions:
-        student = db.query(Student).filter(Student.id == s.student_id).first()
-        response.append({
-            "uuid": s.uuid,
-            "student_name": student.full_name if student else "Unknown",
-            "student_state_code": student.state_code if student else "N/A",
-            "access_count": s.access_count,
-            "download_limit": s.download_limit,
-            "downloads_used": s.downloads_used,
-            "created_at": s.created_at,
-            "expires_at": s.expires_at
-        })
-
-    return {"sessions": response}
-
-
-# ✅ DELETE SESSION
-@router_share.delete("/sessions/{uuid}")
-async def delete_share_session(uuid: str):
-    session = db.query(ShareSession).filter(ShareSession.uuid == uuid).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    db.delete(session)
-    db.commit()
-
-    return {"success": True, "message": "Session deleted"}
-
-
-# Also update the /api/students route to include actual photo counts
-@app.get("/api/students")
-async def get_students():
-    """Get all students in current session with actual photo counts"""
-    students = app_service.get_students()
-    
-    result = []
-    for s in students:
-        # Get ACTUAL photo count from gallery (matched photos)
-        try:
-            photos = app_service.get_student_photos(s)
-            actual_photo_count = len(photos)
-        except:
-            actual_photo_count = 0
-        
-        # Get reference photo count
-        ref_photo_count = 0
-        if s.reference_photo_path:
-            ref_photo_count = len([p for p in s.reference_photo_path.split(',') if p.strip()])
-        
-        result.append({
-            "id": s.id,
-            "state_code": s.state_code,
-            "full_name": s.full_name,
-            "email": s.email,
-            "phone": s.phone,
-            "registered_at": s.registered_at.isoformat(),
-            "photo_count": actual_photo_count,  # Gallery photos (matched)
-            "reference_photo_count": ref_photo_count  # Enrollment photos
-        })
-    
-    return result
-
-
 
 def open_browser(port: int):
     """Open browser after a short delay"""
     time.sleep(1.5)  # Wait for server to start
-    webbrowser.open(f'http://localhost:{port}')
+    webbrowser.open(f'http://localhost:{port}/login')
 
 
 def start_app(port: int = 8080, open_browser_flag: bool = True):

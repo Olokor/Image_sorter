@@ -1,11 +1,12 @@
 """
 SQLAlchemy models for NYSC Camp Photo Sorting DB
-Recursion-safe relationships and debug-friendly reprs
+With Authentication and Download Request features
 """
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, LargeBinary
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, LargeBinary, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
+import hashlib
 
 Base = declarative_base()
 
@@ -15,11 +16,22 @@ class Photographer(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    password_hash = Column(String(256), nullable=False)
     phone = Column(String(20))
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime)
+    is_active = Column(Boolean, default=True)
     license_valid_until = Column(DateTime)
     
     sessions = relationship('CampSession', back_populates='photographer', lazy='select')
+    
+    def set_password(self, password):
+        """Hash and set password"""
+        self.password_hash = hashlib.sha256(password.encode()).hexdigest()
+    
+    def check_password(self, password):
+        """Verify password"""
+        return self.password_hash == hashlib.sha256(password.encode()).hexdigest()
     
     def __repr__(self):
         return f"<Photographer(id={self.id}, name='{self.name}')>"
@@ -43,9 +55,9 @@ class CampSession(Base):
     is_active = Column(Boolean, default=True)
     closed_at = Column(DateTime)
     
-    photographer = relationship('Photographer', back_populates='sessions', lazy='select', )
-    students = relationship('Student', back_populates='session', lazy='select', cascade='all, delete-orphan', )
-    photos = relationship('Photo', back_populates='session', lazy='select', cascade='all, delete-orphan', )
+    photographer = relationship('Photographer', back_populates='sessions', lazy='select')
+    students = relationship('Student', back_populates='session', lazy='select', cascade='all, delete-orphan')
+    photos = relationship('Photo', back_populates='session', lazy='select', cascade='all, delete-orphan')
     
     def __repr__(self):
         return f"<CampSession(id={self.id}, name='{self.name}')>"
@@ -65,9 +77,13 @@ class Student(Base):
     embedding_model = Column(String(50), default='buffalo_l')
     registered_at = Column(DateTime, default=datetime.utcnow)
     
-    session = relationship('CampSession', back_populates='students', lazy='select', )
-    faces = relationship('Face', back_populates='student', lazy='select', cascade='all, delete-orphan', )
-    student_photos = relationship('StudentPhoto', back_populates='student', lazy='select', cascade='all, delete-orphan', )
+    # Download tracking
+    total_downloads = Column(Integer, default=0)  # Total downloads across all sessions
+    
+    session = relationship('CampSession', back_populates='students', lazy='select')
+    faces = relationship('Face', back_populates='student', lazy='select', cascade='all, delete-orphan')
+    student_photos = relationship('StudentPhoto', back_populates='student', lazy='select', cascade='all, delete-orphan')
+    download_requests = relationship('DownloadRequest', back_populates='student', lazy='select', cascade='all, delete-orphan')
     
     def __repr__(self):
         return f"<Student(id={self.id}, full_name='{self.full_name}')>"
@@ -89,9 +105,10 @@ class Photo(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime)
     
-    session = relationship('CampSession', back_populates='photos', lazy='select', )
-    faces = relationship('Face', back_populates='photo', lazy='select', cascade='all, delete-orphan', )
-    student_photos = relationship('StudentPhoto', back_populates='photo', lazy='select', cascade='all, delete-orphan', )
+    session = relationship('CampSession', back_populates='photos', lazy='select')
+    faces = relationship('Face', back_populates='photo', lazy='select', cascade='all, delete-orphan')
+    student_photos = relationship('StudentPhoto', back_populates='photo', lazy='select', cascade='all, delete-orphan')
+    photo_downloads = relationship('PhotoDownload', back_populates='photo', lazy='select', cascade='all, delete-orphan')
     
     def __repr__(self):
         return f"<Photo(id={self.id}, path='{self.original_path}')>"
@@ -115,8 +132,8 @@ class Face(Base):
     needs_review = Column(Boolean, default=False)
     detected_at = Column(DateTime, default=datetime.utcnow)
     
-    photo = relationship('Photo', back_populates='faces', lazy='select', )
-    student = relationship('Student', back_populates='faces', lazy='select', )
+    photo = relationship('Photo', back_populates='faces', lazy='select')
+    student = relationship('Student', back_populates='faces', lazy='select')
     
     def __repr__(self):
         return f"<Face(id={self.id}, match_conf={self.match_confidence})>"
@@ -132,8 +149,8 @@ class StudentPhoto(Base):
     shared_at = Column(DateTime)
     download_count = Column(Integer, default=0)
     
-    student = relationship('Student', back_populates='student_photos', lazy='select', )
-    photo = relationship('Photo', back_populates='student_photos', lazy='select', )
+    student = relationship('Student', back_populates='student_photos', lazy='select')
+    photo = relationship('Photo', back_populates='student_photos', lazy='select')
     
     def __repr__(self):
         return f"<StudentPhoto(id={self.id}, shared={self.shared})>"
@@ -157,6 +174,44 @@ class ShareSession(Base):
         return f"<ShareSession(id={self.id}, uuid={self.session_uuid})>"
 
 
+class PhotoDownload(Base):
+    """Track individual photo downloads per share session"""
+    __tablename__ = 'photo_downloads'
+    
+    id = Column(Integer, primary_key=True)
+    share_session_uuid = Column(String(36), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    photo_id = Column(Integer, ForeignKey('photos.id'), nullable=False)
+    downloaded_at = Column(DateTime, default=datetime.utcnow)
+    
+    photo = relationship('Photo', back_populates='photo_downloads', lazy='select')
+    
+    def __repr__(self):
+        return f"<PhotoDownload(id={self.id}, photo_id={self.photo_id})>"
+
+
+class DownloadRequest(Base):
+    """Student requests for additional downloads"""
+    __tablename__ = 'download_requests'
+    
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    share_session_uuid = Column(String(36), nullable=False, index=True)
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    additional_downloads = Column(Integer, default=10)
+    reason = Column(Text)
+    
+    # Status: pending, approved, rejected
+    status = Column(String(20), default='pending')
+    reviewed_at = Column(DateTime)
+    reviewed_by = Column(Integer, ForeignKey('photographers.id'))
+    
+    student = relationship('Student', back_populates='download_requests', lazy='select')
+    
+    def __repr__(self):
+        return f"<DownloadRequest(id={self.id}, status='{self.status}')>"
+
+
 def init_db(db_path='sqlite:///local.db'):
     engine = create_engine(db_path, echo=False)
     Base.metadata.create_all(engine)
@@ -171,10 +226,11 @@ if __name__ == '__main__':
     
     session = Session()
     photographer = Photographer(name="Test Photographer", email="test@example.com")
+    photographer.set_password("test123")
     session.add(photographer)
     session.commit()
     
     print(f"✓ Created photographer: {photographer.name}")
-    print(f"✓ Queried photographer: {session.query(Photographer).first().name}")
+    print(f"✓ Password check: {photographer.check_password('test123')}")
     session.close()
     print("\n✓ All tests passed!")
