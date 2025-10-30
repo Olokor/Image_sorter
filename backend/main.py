@@ -27,7 +27,7 @@ from models import Student, Photo, CampSession
 
 
 # Initialize FastAPI app
-app = FastAPI(title="TLP Photo App", version="1.0.0")
+app = FastAPI(title="Photo_Sorter App", version="1.0.0")
 
 # Initialize service
 app_service = EnhancedAppService()
