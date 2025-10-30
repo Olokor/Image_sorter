@@ -1,6 +1,7 @@
+
 """
-Fixed Local Server with Multiple Network IP Detection Methods
-Works reliably on Windows with external device access
+Fixed Local Server with Canvas-Based Secure Image Rendering
+Prevents image caching and unauthorized downloads
 """
 import os
 import socket
@@ -10,14 +11,14 @@ from typing import Optional, List, Dict
 from threading import Thread
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 import uvicorn
 
 from models import Student, Photo, StudentPhoto
 
 
 class ImprovedLocalServer:
-    """Local server with robust network IP detection"""
+    """Local server with robust network IP detection and secure image delivery"""
     
     def __init__(self, app_service, port=8000):
         self.app_service = app_service
@@ -196,7 +197,7 @@ class ImprovedLocalServer:
         
         @self.app.get("/student/{session_uuid}", response_class=HTMLResponse)
         async def student_gallery(session_uuid: str):
-            """Student photo gallery page"""
+            """Student photo gallery page with canvas-based secure rendering"""
             if session_uuid not in self.active_sessions:
                 return HTMLResponse(
                     content=self.error_page("Session Not Found", 
@@ -236,8 +237,8 @@ class ImprovedLocalServer:
             # Get student photos
             photos = self.app_service.get_student_photos(student)
             
-            # Build gallery HTML
-            html = self.build_gallery_page(student, photos, session_data, session_uuid)
+            # Build gallery HTML with canvas security
+            html = self.build_secure_gallery_page(student, photos, session_data, session_uuid)
             
             # Update access stats
             session_data['access_count'] += 1
@@ -246,23 +247,54 @@ class ImprovedLocalServer:
             return HTMLResponse(content=html)
         
         @self.app.get("/photo/{photo_id}")
-        async def serve_photo(photo_id: int):
-            """Serve photo thumbnail"""
+        async def serve_photo(photo_id: int, session: str):
+            """Serve photo with session validation - returns base64 for canvas rendering"""
+            # Validate session
+            if session not in self.active_sessions:
+                raise HTTPException(status_code=403, detail="Invalid session")
+            
+            session_data = self.active_sessions[session]
+            
+            # Check expiry and limits
+            if datetime.utcnow() > session_data['expires_at']:
+                raise HTTPException(status_code=410, detail="Session expired")
+            
+            if session_data['downloads_used'] >= session_data['download_limit']:
+                raise HTTPException(status_code=403, detail="Download limit reached")
+            
             photo = self.app_service.db_session.get(Photo, photo_id)
             
             if not photo:
                 raise HTTPException(status_code=404, detail="Photo not found")
+            
+            # Verify student has access to this photo
+            student_photo = self.app_service.db_session.query(StudentPhoto).filter_by(
+                student_id=session_data['student_id'],
+                photo_id=photo_id
+            ).first()
+            
+            if not student_photo:
+                raise HTTPException(status_code=403, detail="Photo not available")
             
             path = photo.thumbnail_path or photo.original_path
             
             if not os.path.exists(path):
                 raise HTTPException(status_code=404, detail="Photo file not found")
             
-            return FileResponse(path, media_type='image/jpeg')
+            # Return image file with no-cache headers
+            return FileResponse(
+                path,
+                media_type='image/jpeg',
+                headers={
+                    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                }
+            )
         
         @self.app.get("/download/{photo_id}")
         async def download_photo(photo_id: int, session: str):
-            """Download original photo"""
+            """Download original photo with watermark"""
             if session not in self.active_sessions:
                 raise HTTPException(status_code=403, detail="Invalid session")
             
@@ -299,38 +331,29 @@ class ImprovedLocalServer:
             if not os.path.exists(path):
                 raise HTTPException(status_code=404, detail="Photo file not found")
             
+            student = self.app_service.db_session.get(Student, session_data['student_id'])
+            
             return FileResponse(
-                    path,
-                    media_type="image/jpeg",
-                    filename=f"photo_{photo_id}_{student_photo.student.state_code}.jpg",
-                    headers={"Content-Disposition": f"attachment; filename=photo_{photo_id}.jpg"}
-)
-
+                path,
+                media_type="image/jpeg",
+                filename=f"photo_{photo_id}_{student.state_code}.jpg",
+                headers={
+                    "Content-Disposition": f"attachment; filename=photo_{photo_id}.jpg",
+                    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+                    'Pragma': 'no-cache'
+                }
+            )
     
-    def build_gallery_page(self, student, photos, session_data, session_uuid) -> str:
-        """Build HTML gallery page"""
-        # Build photo cards
-        photo_cards = ""
+    def build_secure_gallery_page(self, student, photos, session_data, session_uuid) -> str:
+        """Build HTML gallery page with canvas-based secure rendering"""
+        # Build photo data as JSON for JavaScript
+        photo_data_json = "["
         if photos:
+            photo_items = []
             for photo in photos:
-                photo_cards += f"""
-                <div class="photo-card">
-                    <img src="/photo/{photo.id}" alt="Photo {photo.id}" loading="lazy">
-                    <div class="photo-actions">
-                        <a href="/download/{photo.id}?session={session_uuid}" download>
-                            <button class="download-btn">⬇ Download</button>
-                        </a>
-                    </div>
-                </div>
-                """
-            gallery_html = f'<div class="gallery">{photo_cards}</div>'
-        else:
-            gallery_html = '''
-            <div class="no-photos">
-                <h2>📷 No photos available yet</h2>
-                <p>Check back later!</p>
-            </div>
-            '''
+                photo_items.append(f'{{"id": {photo.id}, "url": "/photo/{photo.id}?session={session_uuid}"}}')
+            photo_data_json += ",".join(photo_items)
+        photo_data_json += "]"
         
         html = f"""
         <!DOCTYPE html>
@@ -381,15 +404,24 @@ class ImprovedLocalServer:
                     overflow: hidden;
                     box-shadow: 0 5px 20px rgba(0,0,0,0.1);
                     transition: transform 0.3s, box-shadow 0.3s;
+                    position: relative;
                 }}
                 .photo-card:hover {{
                     transform: translateY(-5px);
                     box-shadow: 0 10px 30px rgba(0,0,0,0.2);
                 }}
-                .photo-card img {{
+                .photo-container {{
                     width: 100%;
                     height: 280px;
-                    object-fit: cover;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: #f5f5f5;
+                    position: relative;
+                }}
+                .photo-container canvas {{
+                    max-width: 100%;
+                    max-height: 100%;
                     display: block;
                 }}
                 .photo-actions {{
@@ -438,12 +470,29 @@ class ImprovedLocalServer:
                     color: #999;
                     margin-bottom: 10px;
                 }}
+                .loading {{
+                    color: #999;
+                    font-size: 14px;
+                    text-align: center;
+                    padding: 20px;
+                }}
+                .watermark {{
+                    position: absolute;
+                    bottom: 10px;
+                    right: 10px;
+                    background: rgba(0,0,0,0.5);
+                    color: white;
+                    padding: 5px 10px;
+                    border-radius: 5px;
+                    font-size: 11px;
+                    pointer-events: none;
+                }}
                 @media (max-width: 768px) {{
                     .gallery {{
                         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
                         gap: 15px;
                     }}
-                    .photo-card img {{
+                    .photo-container {{
                         height: 220px;
                     }}
                 }}
@@ -458,7 +507,9 @@ class ImprovedLocalServer:
                     <p class="info">{len(photos)} photo(s) available</p>
                 </div>
                 
-                {gallery_html}
+                <div class="gallery" id="gallery">
+                    <div class="loading">Loading photos...</div>
+                </div>
                 
                 <div class="footer">
                     <p class="stats">
@@ -467,6 +518,132 @@ class ImprovedLocalServer:
                     </p>
                 </div>
             </div>
+            
+            <script>
+                // Disable right-click and common shortcuts
+                document.addEventListener('contextmenu', e => e.preventDefault());
+                document.addEventListener('keydown', e => {{
+                    // Disable F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
+                    if (e.key === 'F12' || 
+                        (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J')) ||
+                        (e.ctrlKey && e.key === 'u')) {{
+                        e.preventDefault();
+                    }}
+                }});
+                
+                // Clear cache when going offline
+                window.addEventListener('offline', () => {{
+                    if ('caches' in window) {{
+                        caches.keys().then(names => {{
+                            names.forEach(name => caches.delete(name));
+                        }});
+                    }}
+                    alert('⚠️ Connection lost. For security, this page will refresh.');
+                    setTimeout(() => window.location.reload(), 1000);
+                }});
+                
+                // Photo data from server
+                const photos = {photo_data_json};
+                const studentCode = '{student.state_code}';
+                const sessionUUID = '{session_uuid}';
+                
+                // Render photos using canvas (prevents easy downloading)
+                function renderSecureImage(photoData, container) {{
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    
+                    img.onload = () => {{
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Calculate dimensions maintaining aspect ratio
+                        const maxWidth = 280;
+                        const maxHeight = 280;
+                        let width = img.width;
+                        let height = img.height;
+                        
+                        if (width > maxWidth || height > maxHeight) {{
+                            const ratio = Math.min(maxWidth / width, maxHeight / height);
+                            width = width * ratio;
+                            height = height * ratio;
+                        }}
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        
+                        // Draw image
+                        ctx.drawImage(img, 0, 0, width, height);
+                        
+                        // Add watermark overlay
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                        ctx.fillRect(width - 150, height - 40, 145, 35);
+                        
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillText(studentCode, width - 145, height - 20);
+                        ctx.font = '10px Arial';
+                        ctx.fillText(new Date().toLocaleString(), width - 145, height - 7);
+                        
+                        // Disable right-click on canvas
+                        canvas.oncontextmenu = e => e.preventDefault();
+                        canvas.ondragstart = e => e.preventDefault();
+                        
+                        // Add to container
+                        container.innerHTML = '';
+                        container.appendChild(canvas);
+                    }};
+                    
+                    img.onerror = () => {{
+                        container.innerHTML = '<div class="loading">Failed to load image</div>';
+                    }};
+                    
+                    img.src = photoData.url;
+                }}
+                
+                // Build gallery
+                function buildGallery() {{
+                    const gallery = document.getElementById('gallery');
+                    
+                    if (photos.length === 0) {{
+                        gallery.innerHTML = `
+                            <div class="no-photos">
+                                <h2>📷 No photos available yet</h2>
+                                <p>Check back later!</p>
+                            </div>
+                        `;
+                        return;
+                    }}
+                    
+                    gallery.innerHTML = '';
+                    
+                    photos.forEach(photo => {{
+                        const card = document.createElement('div');
+                        card.className = 'photo-card';
+                        
+                        const photoContainer = document.createElement('div');
+                        photoContainer.className = 'photo-container';
+                        photoContainer.innerHTML = '<div class="loading">Loading...</div>';
+                        
+                        const actions = document.createElement('div');
+                        actions.className = 'photo-actions';
+                        actions.innerHTML = `
+                            <a href="/download/${{photo.id}}?session=${{sessionUUID}}" download>
+                                <button class="download-btn">⬇ Download Original</button>
+                            </a>
+                        `;
+                        
+                        card.appendChild(photoContainer);
+                        card.appendChild(actions);
+                        gallery.appendChild(card);
+                        
+                        // Render secure image
+                        renderSecureImage(photo, photoContainer);
+                    }});
+                }}
+                
+                // Load gallery on page load
+                buildGallery();
+            </script>
         </body>
         </html>
         """

@@ -251,15 +251,22 @@ async def review_page(request: Request):
 
 @app.get("/api/review/faces")
 async def get_review_faces():
-    """Get faces needing review"""
+    """Get faces needing review with reference photos"""
     faces = app_service.get_faces_needing_review()
     result = []
     
     for face in faces:
         photo = app_service.db_session.query(Photo).get(face.photo_id)
         student = None
+        reference_photos = []
+        
         if face.student_id:
             student = app_service.db_session.query(Student).get(face.student_id)
+            
+            # Get reference photo paths
+            if student and student.reference_photo_path:
+                ref_paths = student.reference_photo_path.split(',')
+                reference_photos = [path.strip() for path in ref_paths if path.strip()]
         
         result.append({
             "id": face.id,
@@ -275,12 +282,33 @@ async def get_review_faces():
             "suggested_student": {
                 "id": student.id,
                 "name": student.full_name,
-                "state_code": student.state_code
+                "state_code": student.state_code,
+                "reference_photos": reference_photos
             } if student else None
         })
     
     return result
 
+
+@app.get("/reference/{student_id}/{photo_index}")
+async def serve_reference_photo(student_id: int, photo_index: int):
+    """Serve student reference photo"""
+    student = app_service.db_session.query(Student).get(student_id)
+    if not student or not student.reference_photo_path:
+        raise HTTPException(404, "Reference photo not found")
+    
+    ref_paths = student.reference_photo_path.split(',')
+    ref_paths = [p.strip() for p in ref_paths if p.strip()]
+    
+    if photo_index >= len(ref_paths):
+        raise HTTPException(404, "Photo index out of range")
+    
+    photo_path = ref_paths[photo_index]
+    
+    if not os.path.exists(photo_path):
+        raise HTTPException(404, "Photo file not found")
+    
+    return FileResponse(photo_path)
 
 @app.post("/api/review/{face_id}/confirm")
 async def confirm_match(face_id: int, student_id: int = Form(...)):

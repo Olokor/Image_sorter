@@ -21,7 +21,7 @@ from face_service import EnhancedFaceService as FaceService
 class EnhancedAppService:
     """Enhanced application service with backward matching"""
     
-    def __init__(self, db_path='sqlite:///tlp_photos.db'):
+    def __init__(self, db_path='sqlite:///photos_sorter.db'):
         self.engine, SessionMaker = init_db(db_path)
         self.db_session = SessionMaker()
         self.face_service = FaceService()

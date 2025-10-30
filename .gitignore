@@ -210,5 +210,6 @@ __marimo__/
 client/preprocessed_images
 client/tlp_photos.db
 backend/tlp_photos.db
+backend/photos_sorter.db
 backend/uploads
 backend/processed_photos

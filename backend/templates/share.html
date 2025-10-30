@@ -28,6 +28,48 @@
         margin: 15px 0;
         border: 1px solid #E8E8E8;
     }
+    .session-card {
+        background: #F8F9FA;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        border: 1px solid #E8E8E8;
+    }
+    .session-card h4 {
+        margin-bottom: 10px;
+        color: #2C3E50;
+    }
+    .session-card p {
+        margin: 5px 0;
+        font-size: 14px;
+        color: #666;
+    }
+    .session-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin: 15px 0;
+    }
+    .stat-item {
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
+    }
+    .stat-item strong {
+        display: block;
+        font-size: 20px;
+        color: #3498DB;
+    }
+    .stat-item span {
+        font-size: 12px;
+        color: #7F8C8D;
+    }
+    @media (max-width: 768px) {
+        .two-column {
+            grid-template-columns: 1fr;
+        }
+    }
 </style>
 {% endblock %}
 
@@ -36,62 +78,82 @@
     <h1>📱 Share Photos via QR Code</h1>
 </div>
 
+{% if not session %}
+<div class="alert alert-info">
+    ⚠ No active session. Please create or select a session first.
+</div>
+{% else %}
+
 <div class="two-column">
-    <div class="card p-3">
-        <h2 class="mb-3">Generate Share Link</h2>
+    <div class="card">
+        <h2>Generate Share Link</h2>
 
         <!-- Search Student -->
-        <form id="searchForm" class="mb-3">
-            <label>Student State Code *</label>
-            <input type="text" id="stateCodeInput" class="form-control" placeholder="Enter state code..." required>
-            <button class="btn btn-primary w-100 mt-2">🔍 Find Student</button>
+        <form id="searchForm" onsubmit="searchStudent(event)">
+            <div class="form-group">
+                <label>Student State Code *</label>
+                <input type="text" id="stateCodeInput" class="form-control" placeholder="Enter state code..." required>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%;">🔍 Find Student</button>
         </form>
 
         <!-- Student Info -->
-        <div id="studentInfo" class="bg-success-subtle p-3 rounded" style="display:none;">
-            <p class="mb-1 fw-bold" id="studentName"></p>
-            <small class="text-dark"><strong>📷 Gallery Photos:</strong> <span id="studentPhotos">0</span></small>
+        <div id="studentInfo" style="display:none; background: #D5F4E6; padding: 15px; border-radius: 8px; margin-top: 20px; border: 1px solid #2ECC71;">
+            <p style="margin-bottom: 5px;"><strong id="studentName"></strong></p>
+            <p style="margin-bottom: 5px; font-size: 14px;">State Code: <strong id="studentCode"></strong></p>
+            <p style="font-size: 14px; margin: 0;">📷 Gallery Photos: <strong id="studentPhotos">0</strong></p>
         </div>
 
         <!-- QR Settings -->
-        <form id="generateForm" class="mt-4">
-            <label>Link Expiry (Hours)</label>
-            <input type="number" id="expiryHours" class="form-control" value="24" min="1" max="168">
+        <form id="generateForm" onsubmit="generateQR(event)" style="margin-top: 20px;">
+            <div class="form-group">
+                <label>Link Expiry (Hours)</label>
+                <input type="number" id="expiryHours" class="form-control" value="24" min="1" max="168">
+            </div>
 
-            <label class="mt-2">Download Limit</label>
-            <input type="number" id="downloadLimit" class="form-control" value="50" min="1" max="1000">
+            <div class="form-group">
+                <label>Download Limit</label>
+                <input type="number" id="downloadLimit" class="form-control" value="50" min="1" max="1000">
+            </div>
 
-            <button class="btn btn-success w-100 mt-3" id="generateBtn">📱 Generate QR Code</button>
+            <button type="submit" class="btn btn-success" id="generateBtn" style="width: 100%;">
+                📱 Generate QR Code
+            </button>
         </form>
 
         <!-- QR Result -->
-        <div id="qrResult" style="display:none;" class="mt-4">
-            <h3 class="text-success text-center">✓ QR Code Ready</h3>
+        <div id="qrResult" style="display:none; margin-top: 20px;">
+            <h3 style="color: #2ECC71; text-align: center; margin-bottom: 20px;">✓ QR Code Ready</h3>
 
             <div class="qr-display">
-                <img id="qrImage" />
+                <img id="qrImage" alt="QR Code"/>
             </div>
 
             <div class="share-url" id="shareUrl"></div>
 
-            <div class="d-flex gap-2">
-                <button class="btn btn-primary flex-fill" onclick="copyURL()">📋 Copy URL</button>
-                <button class="btn btn-success flex-fill" onclick="downloadQR()">💾 Save QR</button>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <button class="btn btn-primary" onclick="copyURL()" style="flex: 1;">📋 Copy URL</button>
+                <button class="btn btn-success" onclick="downloadQR()" style="flex: 1;">💾 Save QR</button>
             </div>
 
-            <button class="btn btn-danger w-100 mt-2" onclick="clearQR()">✗ Clear</button>
+            <button class="btn btn-danger" onclick="clearQR()" style="width: 100%;">✗ Clear</button>
         </div>
 
     </div>
 
-    <div class="card p-3">
+    <div class="card">
         <h2>Active Share Sessions</h2>
-        <button class="btn btn-primary mb-2" onclick="loadActiveSessions()">🔄 Refresh</button>
+        <button class="btn btn-primary" onclick="loadSessions()" style="margin-bottom: 15px; width: 100%;">
+            🔄 Refresh Sessions
+        </button>
         <div id="sessionsContainer">
-            <p class="text-center text-muted">Loading...</p>
+            <p style="text-align: center; color: #7F8C8D; padding: 20px;">Loading...</p>
         </div>
     </div>
 </div>
+
+{% endif %}
+
 {% endblock %}
 
 {% block extra_js %}
@@ -99,109 +161,228 @@
 let currentStudent = null;
 let shareURL = "";
 
-// ✅ Search student locally
-document.getElementById("searchForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const stateCode = document.getElementById("stateCodeInput").value.trim();
+// Search student
+async function searchStudent(event) {
+    event.preventDefault();
+    
+    const stateCode = document.getElementById('stateCodeInput').value.trim();
+    
+    if (!stateCode) {
+        showMessage('Please enter a state code', 'error');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/students');
+        const students = await res.json();
 
-    const res = await fetch("/api/students");
-    const students = await res.json();
+        const student = students.find(s => 
+            s.state_code.toLowerCase() === stateCode.toLowerCase()
+        );
+        
+        if (!student) {
+            showMessage('Student not found ❌', 'error');
+            document.getElementById('studentInfo').style.display = 'none';
+            return;
+        }
 
-    const student = students.find(s => s.state_code.toLowerCase() === stateCode.toLowerCase());
-    if (!student) return alert("Student not found ❌");
+        currentStudent = student;
+        document.getElementById('studentName').textContent = student.full_name;
+        document.getElementById('studentCode').textContent = student.state_code;
+        document.getElementById('studentPhotos').textContent = student.photo_count || 0;
+        document.getElementById('studentInfo').style.display = 'block';
+        
+        showMessage('Student found! ✓', 'success');
+        
+    } catch (error) {
+        showMessage('Failed to search student', 'error');
+        console.error(error);
+    }
+}
 
-    currentStudent = student;
-    document.getElementById("studentName").textContent = student.full_name;
-    document.getElementById("studentPhotos").textContent = student.photo_count;
-    document.getElementById("studentInfo").style.display = "block";
-});
-
-// ✅ Create Share Link + QR Code
-document.getElementById("generateForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (!currentStudent) return alert("Search student first");
-
-    const btn = document.getElementById("generateBtn");
-    btn.disabled = true;
-    btn.textContent = "⏳ Generating...";
-
-    const formData = new FormData();
-    formData.append("state_code", currentStudent.state_code);
-    formData.append("expiry_hours", document.getElementById("expiryHours").value);
-    formData.append("download_limit", document.getElementById("downloadLimit").value);
-
-    const res = await fetch("/api/share/create", { method: "POST", body: formData });
-
-    if (!res.ok) {
-        alert("Failed to generate share link ❌");
-        btn.disabled = false;
-        btn.textContent = "📱 Generate QR Code";
+// Generate QR Code
+async function generateQR(event) {
+    event.preventDefault();
+    
+    if (!currentStudent) {
+        showMessage('Please search for a student first', 'error');
+        return;
+    }
+    
+    if (!currentStudent.photo_count || currentStudent.photo_count === 0) {
+        showMessage('Student has no gallery photos to share', 'error');
         return;
     }
 
-    const data = await res.json();
+    const btn = document.getElementById('generateBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Generating...';
 
-    shareURL = data.share_url;
-    document.getElementById("qrImage").src = data.qr_code;
-    document.getElementById("shareUrl").textContent = data.share_url;
-    document.getElementById("qrResult").style.display = "block";
+    try {
+        const formData = new FormData();
+        formData.append('state_code', currentStudent.state_code);
+        formData.append('expiry_hours', document.getElementById('expiryHours').value);
+        formData.append('download_limit', document.getElementById('downloadLimit').value);
 
-    btn.disabled = false;
-    btn.textContent = "📱 Generate QR Code";
+        const res = await fetch('/api/share/create', { 
+            method: 'POST', 
+            body: formData 
+        });
 
-    loadSessions();
-});
+        if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.detail || 'Failed to generate share link');
+        }
 
-// ✅ Load Active Sessions
+        const data = await res.json();
+
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to generate QR code');
+        }
+
+        shareURL = data.share_url;
+        document.getElementById('qrImage').src = data.qr_code;
+        document.getElementById('shareUrl').textContent = data.share_url;
+        document.getElementById('qrResult').style.display = 'block';
+
+        showMessage('QR Code generated successfully! ✓', 'success');
+        
+        // Refresh sessions list
+        loadSessions();
+
+    } catch (error) {
+        showMessage(error.message, 'error');
+        console.error(error);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📱 Generate QR Code';
+    }
+}
+
+// Load Active Sessions
 async function loadSessions() {
-    const container = document.getElementById("sessionsContainer");
-    container.innerHTML = `<p class="text-muted text-center">Loading...</p>`;
+    const container = document.getElementById('sessionsContainer');
+    container.innerHTML = '<p style="text-align: center; color: #7F8C8D; padding: 20px;">Loading...</p>';
 
-    const res = await fetch("/api/share/sessions");
-    const data = await res.json();
+    try {
+        const res = await fetch('/api/share/sessions');
+        const data = await res.json();
 
-    if (!data.sessions.length)
-        return container.innerHTML = `<p class="text-center text-muted">No active sessions</p>`;
+        if (!data.sessions || data.sessions.length === 0) {
+            container.innerHTML = '<p style="text-align: center; color: #7F8C8D; padding: 20px;">No active sessions</p>';
+            return;
+        }
 
-    container.innerHTML = data.sessions.map(s => `
-        <div class="p-3 border rounded mb-2">
-            <strong>${s.student_name}</strong><br>
-            State Code: ${s.student_state_code}<br>
-            Downloads: ${s.downloads_used}/${s.download_limit}<br>
-            <button class="btn btn-sm btn-danger mt-2"
-                onclick="deleteSession('${s.uuid}')">Delete</button>
-        </div>
-    `).join("");
+        container.innerHTML = data.sessions.map(s => `
+            <div class="session-card">
+                <h4>${s.student_name}</h4>
+                <p><strong>State Code:</strong> ${s.student_state_code}</p>
+                <div class="session-stats">
+                    <div class="stat-item">
+                        <strong>${s.access_count}</strong>
+                        <span>Access Count</span>
+                    </div>
+                    <div class="stat-item">
+                        <strong>${s.downloads_used}/${s.download_limit}</strong>
+                        <span>Downloads</span>
+                    </div>
+                </div>
+                <p style="font-size: 12px; color: #7F8C8D;">
+                    Created: ${new Date(s.created_at).toLocaleString()}
+                </p>
+                <p style="font-size: 12px; color: #7F8C8D;">
+                    Expires: ${new Date(s.expires_at).toLocaleString()}
+                </p>
+                <button class="btn btn-danger" style="width: 100%; margin-top: 10px;" 
+                    onclick="deleteSession('${s.uuid}')">
+                    🗑 Delete Session
+                </button>
+            </div>
+        `).join('');
+        
+    } catch (error) {
+        container.innerHTML = '<p style="text-align: center; color: #E74C3C; padding: 20px;">Failed to load sessions</p>';
+        console.error(error);
+    }
 }
 
-// ✅ Delete a session
+// Delete a session
 async function deleteSession(uuid) {
-    await fetch(`/api/share/sessions/${uuid}`, { method: "DELETE" });
-    loadSessions();
+    if (!confirm('Delete this share session? The QR code will stop working.')) {
+        return;
+    }
+    
+    try {
+        const res = await fetch(`/api/share/sessions/${uuid}`, { method: 'DELETE' });
+        
+        if (res.ok) {
+            showMessage('Session deleted ✓', 'success');
+            loadSessions();
+        } else {
+            showMessage('Failed to delete session', 'error');
+        }
+    } catch (error) {
+        showMessage('Failed to delete session', 'error');
+        console.error(error);
+    }
 }
 
-// ✅ Copy URL
+// Copy URL to clipboard
 function copyURL() {
-    navigator.clipboard.writeText(shareURL);
-    alert("URL Copied ✅");
+    if (!shareURL) return;
+    
+    navigator.clipboard.writeText(shareURL).then(() => {
+        showMessage('URL copied to clipboard ✓', 'success');
+    }).catch(err => {
+        showMessage('Failed to copy URL', 'error');
+        console.error(err);
+    });
 }
 
-// ✅ Download QR
+// Download QR Code
 function downloadQR() {
-    const link = document.createElement("a");
-    link.href = document.getElementById("qrImage").src;
+    if (!currentStudent) return;
+    
+    const link = document.createElement('a');
+    link.href = document.getElementById('qrImage').src;
     link.download = `QR_${currentStudent.state_code}.png`;
     link.click();
+    
+    showMessage('QR Code downloaded ✓', 'success');
 }
 
-// ✅ Clear QR result
+// Clear QR result
 function clearQR() {
-    document.getElementById("qrResult").style.display = "none";
-    shareURL = "";
+    document.getElementById('qrResult').style.display = 'none';
+    shareURL = '';
 }
 
-// Load on page start
-loadSessions();
+// Show message helper
+function showMessage(message, type) {
+    // Use the base template's showMessage if available, otherwise alert
+    if (typeof window.showMessage === 'function') {
+        window.showMessage(message, type);
+    } else {
+        // Fallback: create temporary alert
+        const alertDiv = document.createElement('div');
+        alertDiv.className = `alert alert-${type}`;
+        alertDiv.textContent = message;
+        alertDiv.style.position = 'fixed';
+        alertDiv.style.top = '20px';
+        alertDiv.style.right = '20px';
+        alertDiv.style.zIndex = '9999';
+        alertDiv.style.minWidth = '300px';
+        
+        document.body.appendChild(alertDiv);
+        
+        setTimeout(() => alertDiv.remove(), 3000);
+    }
+}
+
+// Load sessions on page load
+if (document.getElementById('sessionsContainer')) {
+    loadSessions();
+}
 </script>
 
 {% endblock %}
