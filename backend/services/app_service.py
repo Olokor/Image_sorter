@@ -34,14 +34,14 @@ class EnhancedAppService:
         """Initialize or get photographer"""
         photographer = self.db_session.query(Photographer).first()
         
-        if not photographer:
-            photographer = Photographer(
-                name="Demo Photographer",
-                email="demo@tlpphoto.com",
-                license_valid_until=datetime.utcnow() + timedelta(days=30)
-            )
-            self.db_session.add(photographer)
-            self.db_session.commit()
+        # if not photographer:
+        #     photographer = Photographer(
+        #         name="Demo Photographer",
+        #         email="demo@tlpphoto.com",
+        #         license_valid_until=datetime.utcnow() + timedelta(days=30)
+        #     )
+        #     self.db_session.add(photographer)
+        #     self.db_session.commit()
         
         self.current_photographer = photographer
     

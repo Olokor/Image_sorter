@@ -1,5 +1,5 @@
 """
-TLP Photo App - Web-Based GUI Version with Authentication
+Photo App - Web-Based GUI Version with Authentication
 FastAPI + HTML/CSS/JS frontend
 """
 import sys
@@ -25,6 +25,8 @@ if str(CLIENT_DIR) not in sys.path:
 
 from services.app_service import EnhancedAppService
 from models import Student, Photo, CampSession, Photographer, DownloadRequest
+
+# Initialize license manager
 
 # Initialize FastAPI app
 app = FastAPI(title="Photo_Sorter App", version="1.0.0")
@@ -60,7 +62,7 @@ def get_current_photographer(session_token: Optional[str] = Cookie(None)):
         return None
     
     photographer_id = active_sessions[session_token]['photographer_id']
-    photographer = app_service.db_session.query(Photographer).get(photographer_id)
+    photographer = app_service.db_session.get(Photographer,photographer_id)
     
     if photographer and photographer.is_active:
         return photographer
@@ -425,7 +427,7 @@ async def get_review_faces(photographer: Photographer = Depends(require_auth)):
         reference_photos = []
         
         if face.student_id:
-            student = app_service.db_session.query(Student).get(face.student_id)
+            student = app_service.db_session.get(Student, face.student_id)
             
             # Get reference photo paths
             if student and student.reference_photo_path:
@@ -461,7 +463,7 @@ async def serve_reference_photo(
     photographer: Photographer = Depends(require_auth)
 ):
     """Serve student reference photo"""
-    student = app_service.db_session.query(Student).get(student_id)
+    student = app_service.db_session.get(Student, student_id)
     if not student or not student.reference_photo_path:
         raise HTTPException(404, "Reference photo not found")
     
@@ -503,7 +505,7 @@ async def share_page(request: Request, photographer: Photographer = Depends(requ
 @app.get("/photo/{photo_id}")
 async def serve_photo(photo_id: int, photographer: Photographer = Depends(require_auth)):
     """Serve photo file"""
-    photo = app_service.db_session.query(Photo).get(photo_id)
+    photo = app_service.db_session.get(Photo, photo_id)
     if not photo:
         raise HTTPException(404, "Photo not found")
     
@@ -514,17 +516,28 @@ async def serve_photo(photo_id: int, photographer: Photographer = Depends(requir
     return FileResponse(path)
 
 
+"""
+License Payment API Routes
+Add these routes to your backend/main.py file
+
+Add import at top:
+from services.license_manager import LicenseManager
+
+Initialize in app startup:
+license_manager = LicenseManager(app_service.db_session)
+"""
+
+# ==================== LICENSE & PAYMENT ROUTES ====================
+
 @app.get("/license", response_class=HTMLResponse)
 async def license_page(request: Request, photographer: Photographer = Depends(require_auth)):
-    """License page with proper session handling"""
+    """Enhanced license page with payment integration"""
     try:
-        license_info = app_service.check_license()
+        # Get license info from license manager
+        license_info = license_manager.check_license()
         session = app_service.get_active_session()
         
-        # Get photographer info
-        photographer_data = photographer
-        
-        # If there's a session, calculate billing info
+        # Calculate billing info if session exists
         billing_info = None
         if session:
             amount_due = session.student_count * 200  # ₦200 per student
@@ -541,20 +554,146 @@ async def license_page(request: Request, photographer: Photographer = Depends(re
             "license": license_info,
             "session": session,
             "billing": billing_info,
-            "photographer": photographer_data
+            "photographer": photographer
         })
     except Exception as e:
         print(f"License page error: {e}")
-        # Return minimal page on error
         return templates.TemplateResponse("license.html", {
             "request": request,
-            "license": {'valid': False, 'expires': 'Unknown', 'days_remaining': 0},
+            "license": {
+                'valid': False,
+                'expires': 'Error',
+                'days_remaining': 0,
+                'message': str(e)
+            },
             "session": None,
             "billing": None,
             "photographer": photographer
         })
 
 
+@app.post("/api/license/initialize-payment")
+async def initialize_license_payment(photographer: Photographer = Depends(require_auth)):
+    """Initialize license renewal payment"""
+    try:
+        success, data = license_manager.initialize_payment(photographer.email)
+        
+        if success:
+            return {
+                "success": True,
+                "reference": data["reference"],
+                "payment_url": data["payment_url"],
+                "message": "Payment initialized successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "error": data.get("error", "Payment initialization failed")
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/license/verify-payment")
+async def verify_license_payment(
+    reference: str = Form(...),
+    photographer: Photographer = Depends(require_auth)
+):
+    """Verify payment status and check for license in email"""
+    try:
+        success, data = license_manager.verify_payment(reference)
+        
+        if success:
+            return {
+                "success": True,
+                "status": "success",
+                "message": "Payment successful! Check your email for the license key.",
+                "email": photographer.email
+            }
+        else:
+            return {
+                "success": False,
+                "status": data.get("status", "failed"),
+                "error": data.get("error", "Payment verification failed")
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/license/activate")
+async def activate_license_key(
+    license_key: str = Form(...),
+    photographer: Photographer = Depends(require_auth)
+):
+    """Activate a license key"""
+    try:
+        success, message = license_manager.activate_license(license_key)
+        
+        if success:
+            # Update photographer license validity in database
+            photographer.license_valid_until = datetime.utcnow() + timedelta(days=365)
+            app_service.db_session.commit()
+            
+            return {
+                "success": True,
+                "message": message
+            }
+        else:
+            return {
+                "success": False,
+                "error": message
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/license/status")
+async def get_license_status(photographer: Photographer = Depends(require_auth)):
+    """Get current license status"""
+    try:
+        license_info = license_manager.check_license()
+        return license_info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/license/remove")
+async def remove_license(photographer: Photographer = Depends(require_auth)):
+    """Remove/deactivate current license"""
+    try:
+        success = license_manager.remove_license()
+        
+        if success:
+            # Update database
+            photographer.license_valid_until = datetime.utcnow()
+            app_service.db_session.commit()
+            
+            return {
+                "success": True,
+                "message": "License removed successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "No license to remove"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/license/device-info")
+async def get_device_info(photographer: Photographer = Depends(require_auth)):
+    """Get device fingerprint for troubleshooting"""
+    try:
+        device_fp = license_manager.generate_device_fingerprint()
+        return {
+            "device_fingerprint": device_fp,
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "hostname": platform.node()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 # ==================== DOWNLOAD REQUEST ROUTES ====================
 
 @app.get("/requests", response_class=HTMLResponse)
@@ -788,4 +927,16 @@ def start_app(port: int = 8080, open_browser_flag: bool = True):
 
 
 if __name__ == "__main__":
+    from services.license_manager import LicenseManager
+
+    # Initialize license manager
+    try:
+        license_manager = LicenseManager()
+        print("✓ License manager initialized")
+    except Exception as e:
+        print(f"⚠ License manager initialization failed: {e}")
+        license_manager = None
     start_app(port=8080, open_browser_flag=True)
+    # After line: app_service = EnhancedAppService()
+# Add this:
+

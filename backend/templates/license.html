@@ -7,6 +7,7 @@
     <h1>💳 License & Payment</h1>
 </div>
 
+<!-- License Status Card -->
 <div class="card">
     <h2>License Status</h2>
     <table style="width: 100%; max-width: 600px;">
@@ -16,7 +17,7 @@
                 {% if license.valid %}
                     <span style="color: #2ECC71; font-weight: 600;">✓ Active</span>
                 {% else %}
-                    <span style="color: #E74C3C; font-weight: 600;">✗ Expired</span>
+                    <span style="color: #E74C3C; font-weight: 600;">✗ {{ license.message or 'Expired' }}</span>
                 {% endif %}
             </td>
         </tr>
@@ -41,9 +42,98 @@
             </td>
         </tr>
     </table>
+    
+    {% if not license.valid or license.days_remaining < 7 %}
+    <div class="alert alert-warning" style="margin-top: 20px;">
+        <strong>⚠ Action Required:</strong> 
+        {% if not license.valid %}
+            Your license has expired. Please renew to continue using the app.
+        {% else %}
+            Your license expires in {{ license.days_remaining }} days. Renew now to avoid interruption.
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Payment Section -->
+<div class="card">
+    <h2>Pay for Students</h2>
+    
+    <div style="background: #ECF0F1; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+        <h3 style="margin-top: 0; color: #2C3E50;">💰 Pricing</h3>
+        <div style="font-size: 18px; color: #34495E;">
+            <strong>₦200</strong> per student enrolled
+        </div>
+        <ul style="margin-top: 15px; color: #7F8C8D; line-height: 1.8;">
+            <li>30 days validity per payment</li>
+            <li>Unlimited photo uploads</li>
+            <li>Face recognition & sorting</li>
+            <li>QR code sharing for students</li>
+        </ul>
+    </div>
+    
+    {% if session %}
+    <div style="background: #E8F5E9; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #4CAF50;">
+        <strong>Current Session:</strong> {{ session.name }}<br>
+        <strong>Students Enrolled:</strong> {{ session.student_count }}<br>
+        <strong>Amount to Pay:</strong> ₦{{ session.student_count * 200 }}
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: 600;">
+            Number of students to pay for:
+        </label>
+        <input 
+            type="number" 
+            id="studentCountInput" 
+            value="{{ session.student_count }}"
+            min="1"
+            style="width: 100%; padding: 12px; border: 2px solid #BDC3C7; border-radius: 6px; font-size: 16px;"
+            onchange="updatePaymentAmount()"
+        >
+        <div id="paymentAmount" style="margin-top: 10px; font-size: 18px; font-weight: 600; color: #E67E22;">
+            Amount: ₦{{ session.student_count * 200 }}
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-warning">
+        <strong>⚠️ No Active Session</strong><br>
+        Please create a session first before making payment.
+    </div>
+    {% endif %}
+    
+    <button 
+        class="btn btn-primary" 
+        style="width: 100%; height: 60px; font-size: 18px;"
+        onclick="initializePayment()"
+        {% if not session %}disabled{% endif %}
+    >
+        🛒 Pay Now
+    </button>
+    
+    <div id="paymentStatus" style="margin-top: 20px; display: none;"></div>
+</div>
+
+<!-- Update License Section -->
+<div class="card">
+    <h2>Update License</h2>
+    <p style="color: #7F8C8D; margin-bottom: 20px;">
+        After completing payment, click the button below to activate your license.
+    </p>
+    
+    <button 
+        class="btn btn-success" 
+        style="width: 100%; height: 60px; font-size: 18px;"
+        onclick="updateLicense()"
+    >
+        🔄 Update License from Server
+    </button>
+    
+    <div id="updateStatus" style="margin-top: 20px; display: none;"></div>
 </div>
 
 {% if session %}
+<!-- Session Billing (if needed) -->
 <div class="card">
     <h2>Current Session Billing</h2>
     <table style="width: 100%; max-width: 600px;">
@@ -81,92 +171,183 @@
         </tr>
     </table>
 </div>
-
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-    <button class="btn btn-success" style="height: 60px; font-size: 16px;" onclick="showPaymentInfo()">
-        💰 Pay for Session
-    </button>
-    <button class="btn btn-primary" style="height: 60px; font-size: 16px;" onclick="showRenewalInfo()">
-        🔄 Renew License
-    </button>
-</div>
 {% endif %}
 
-<div class="card">
-    <h2>Payment Information</h2>
-    <div style="line-height: 2; color: #34495E;">
-        <h3 style="margin-top: 0;">Pricing</h3>
-        <ul>
-            <li><strong>First session:</strong> Free trial</li>
-            <li><strong>Subsequent sessions:</strong> ₦200 per enrolled student</li>
-            <li><strong>License validity:</strong> 30 days from activation</li>
-            <li><strong>Payment method:</strong> Paystack (online)</li>
-        </ul>
-        
-        <div class="alert alert-info" style="margin-top: 20px;">
-            <strong>Note:</strong> Full payment integration requires cloud backend deployment. 
-            Currently running in local mode.
+<!-- Device Info (for troubleshooting) -->
+<div class="card" style="margin-top: 20px;">
+    <details>
+        <summary style="cursor: pointer; color: #3498DB; font-weight: 600;">
+            🔧 Device Information (for support)
+        </summary>
+        <div id="deviceInfo" style="margin-top: 15px; font-family: monospace; font-size: 12px; color: #7F8C8D;">
+            Loading...
         </div>
-    </div>
+    </details>
 </div>
 
 {% endblock %}
 
 {% block extra_js %}
 <script>
-    function showPaymentInfo() {
-        {% if not session %}
-            alert('No active session');
-            return;
-        {% endif %}
-        
-        {% if session.is_free_trial %}
-            alert('This is a free trial session - no payment required!');
-            return;
-        {% endif %}
-        
-        {% if session.payment_verified %}
-            alert('This session has already been paid for!');
-            return;
-        {% endif %}
-        
-        const amount = {{ session.student_count * 200 }};
-        
-        const message = `
-Session: {{ session.name }}
-Students: {{ session.student_count }}
-Amount: ₦${amount.toFixed(2)}
+let currentPaymentReference = null;
 
-Payment integration coming soon!
-This will:
-1. Close the session
-2. Generate payment link
-3. Open Paystack checkout
-4. Verify payment via webhook
-5. Update license for next session
+// Load device info on page load
+window.addEventListener('DOMContentLoaded', function() {
+    loadDeviceInfo();
+});
 
-For now, sessions can be used without payment.
+async function loadDeviceInfo() {
+    try {
+        const response = await fetch('/api/license/device-info');
+        const data = await response.json();
+        
+        document.getElementById('deviceInfo').innerHTML = `
+            <strong>Device Fingerprint:</strong> ${data.device_fingerprint}<br>
+            <strong>System:</strong> ${data.system}<br>
+            <strong>Machine:</strong> ${data.machine}<br>
+            <strong>Hostname:</strong> ${data.hostname}
         `;
+    } catch (error) {
+        document.getElementById('deviceInfo').innerHTML = 'Error loading device info';
+    }
+}
+
+async function initializePayment() {
+    const statusDiv = document.getElementById('paymentStatus');
+    statusDiv.style.display = 'block';
+    statusDiv.innerHTML = '<div style="color: #3498DB;">🔄 Initializing payment...</div>';
+    
+    try {
+        const response = await fetch('/api/license/initialize-payment', {
+            method: 'POST'
+        });
         
-        alert(message);
+        const data = await response.json();
+        
+        if (data.success) {
+            currentPaymentReference = data.reference;
+            
+            statusDiv.innerHTML = `
+                <div style="background: #E8F5E9; padding: 15px; border-radius: 6px; border-left: 4px solid #4CAF50;">
+                    <strong>✓ Payment initialized</strong><br>
+                    <span style="font-size: 12px; color: #666;">Reference: ${data.reference}</span><br><br>
+                    <button class="btn btn-success" onclick="openPaymentPage('${data.payment_url}')">
+                        🌐 Open Payment Page
+                    </button>
+                    <button class="btn btn-secondary" onclick="verifyPayment()" style="margin-left: 10px;">
+                        🔍 I've Paid - Check Status
+                    </button>
+                </div>
+            `;
+        } else {
+            statusDiv.innerHTML = `
+                <div class="alert alert-danger">
+                    <strong>❌ Error:</strong> ${data.error}
+                </div>
+            `;
+        }
+    } catch (error) {
+        statusDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <strong>❌ Network Error:</strong> ${error.message}<br>
+                <small>Please check your internet connection and try again.</small>
+            </div>
+        `;
+    }
+}
+
+function openPaymentPage(paymentUrl) {
+    window.open(paymentUrl, '_blank');
+    
+    const statusDiv = document.getElementById('paymentStatus');
+    statusDiv.innerHTML += `
+        <div style="margin-top: 15px; background: #FFF3CD; padding: 15px; border-radius: 6px; border-left: 4px solid #FFC107;">
+            <strong>⏳ Complete payment in the new window</strong><br>
+            After payment, return here and click "I've Paid - Check Status"
+        </div>
+    `;
+}
+
+async function verifyPayment() {
+    if (!currentPaymentReference) {
+        alert('No payment reference found. Please initialize payment first.');
+        return;
     }
     
-    function showRenewalInfo() {
-        const message = `
-License Renewal
-
-Current Status: {% if license.valid %}Active{% else %}Expired{% endif %}
-Days Remaining: {{ license.days_remaining }}
-
-License renewal feature coming soon!
-
-This will connect to the cloud backend and initiate
-a Paystack payment for license extension.
-
-For now, your license is valid for 30 days from activation.
-        `;
+    const statusDiv = document.getElementById('paymentStatus');
+    statusDiv.innerHTML = '<div style="color: #3498DB;">🔄 Verifying payment...</div>';
+    
+    try {
+        const formData = new FormData();
+        formData.append('reference', currentPaymentReference);
         
-        alert(message);
+        const response = await fetch('/api/license/verify-payment', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            statusDiv.innerHTML = `
+                <div style="background: #E8F5E9; padding: 20px; border-radius: 6px; border-left: 4px solid #4CAF50;">
+                    <h3 style="margin-top: 0; color: #4CAF50;">✓ Payment Successful!</h3>
+                    <p>Your license key has been sent to: <strong>${data.email}</strong></p>
+                    <p style="color: #666;">Check your email and paste the license key above to activate.</p>
+                </div>
+            `;
+            
+            // Scroll to activation section
+            document.getElementById('licenseKeyInput').scrollIntoView({ behavior: 'smooth' });
+        } else {
+            statusDiv.innerHTML = `
+                <div style="background: #FFF3CD; padding: 15px; border-radius: 6px; border-left: 4px solid #FFC107;">
+                    <strong>⏳ Payment Pending</strong><br>
+                    ${data.error || 'Please complete the payment and try again.'}
+                    <br><br>
+                    <button class="btn btn-primary" onclick="verifyPayment()">
+                        🔄 Check Again
+                    </button>
+                </div>
+            `;
+        }
+    } catch (error) {
+        statusDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <strong>❌ Verification Error:</strong> ${error.message}
+            </div>
+        `;
     }
+}
+
+async function activateLicense() {
+    const licenseKey = document.getElementById('licenseKeyInput').value.trim();
+    
+    if (!licenseKey) {
+        alert('Please enter a license key');
+        return;
+    }
+    
+    try {
+        const formData = new FormData();
+        formData.append('license_key', licenseKey);
+        
+        const response = await fetch('/api/license/activate', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✓ ' + data.message);
+            window.location.reload();
+        } else {
+            alert('❌ Activation failed: ' + data.error);
+        }
+    } catch (error) {
+        alert('❌ Error: ' + error.message);
+    }
+}
 </script>
 {% endblock %}

@@ -213,3 +213,5 @@ backend/tlp_photos.db
 backend/photos_sorter.db
 backend/uploads
 backend/processed_photos
+backend/public_key_backup.pem
+backend/public_key.pem
