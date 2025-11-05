@@ -21,7 +21,7 @@ import webbrowser
 class LicenseManager:
     """Manages license operations for offline app"""
     
-    def __init__(self, api_base_url: str = "http://localhost:7000"):
+    def __init__(self, api_base_url: str = "http://localhost:8001"):
         self.api_base_url = api_base_url.rstrip("/")
         self.license_file = Path("license.key")
         self.public_key = None

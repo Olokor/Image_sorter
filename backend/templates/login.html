@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Photo_Sorter App</title>
+    <title>Photo Sorter - Login</title>
     <style>
         * {
             margin: 0;
@@ -26,7 +26,7 @@
             padding: 50px 40px;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 450px;
+            max-width: 500px;
             width: 100%;
         }
         
@@ -128,7 +128,17 @@
             box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
         }
         
-        .btn-primary:disabled {
+        .btn-secondary {
+            background: #95A5A6;
+            color: white;
+            margin-top: 10px;
+        }
+        
+        .btn-secondary:hover {
+            background: #7F8C8D;
+        }
+        
+        .btn:disabled {
             background: #BDC3C7;
             cursor: not-allowed;
             transform: none;
@@ -152,13 +162,53 @@
             color: #27AE60;
             border: 1px solid #2ECC71;
         }
+        
+        .alert-info {
+            background: #D6EAF8;
+            color: #2980B9;
+            border: 1px solid #3498DB;
+        }
+        
+        .otp-inputs {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        
+        .otp-input {
+            width: 50px;
+            height: 55px;
+            text-align: center;
+            font-size: 24px;
+            font-weight: 600;
+            border: 2px solid #E8E8E8;
+            border-radius: 8px;
+        }
+        
+        .otp-input:focus {
+            border-color: #3498DB;
+            outline: none;
+        }
+        
+        .text-link {
+            color: #3498DB;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-block;
+            margin-top: 10px;
+        }
+        
+        .text-link:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
     <div class="auth-container">
         <div class="logo">
-            <h1>📷 Photo Sorter App</h1>
-            <p>Photographer Edition</p>
+            <h1>📷 Photo Sorter</h1>
+            <p>Desktop Edition</p>
         </div>
         
         <div id="alertContainer"></div>
@@ -201,7 +251,7 @@
                 </div>
                 
                 <div class="form-group">
-                    <label>Phone</label>
+                    <label>Phone (Optional)</label>
                     <input type="tel" name="phone" class="form-control" placeholder="+234...">
                 </div>
                 
@@ -220,9 +270,42 @@
                 </button>
             </form>
         </div>
+        
+        <!-- OTP Verification Section -->
+        <div id="otpSection" class="form-section">
+            <div class="alert alert-info">
+                📧 We've sent a 6-digit code to <strong id="otpEmail"></strong>
+            </div>
+            
+            <form id="otpForm" onsubmit="handleOTPVerification(event)">
+                <div class="form-group">
+                    <label>Enter Verification Code</label>
+                    <div class="otp-inputs">
+                        <input type="text" class="otp-input" maxlength="1" id="otp1" onkeyup="moveToNext(this, 'otp2')" onkeydown="moveToPrev(this, null)">
+                        <input type="text" class="otp-input" maxlength="1" id="otp2" onkeyup="moveToNext(this, 'otp3')" onkeydown="moveToPrev(this, 'otp1')">
+                        <input type="text" class="otp-input" maxlength="1" id="otp3" onkeyup="moveToNext(this, 'otp4')" onkeydown="moveToPrev(this, 'otp2')">
+                        <input type="text" class="otp-input" maxlength="1" id="otp4" onkeyup="moveToNext(this, 'otp5')" onkeydown="moveToPrev(this, 'otp3')">
+                        <input type="text" class="otp-input" maxlength="1" id="otp5" onkeyup="moveToNext(this, 'otp6')" onkeydown="moveToPrev(this, 'otp4')">
+                        <input type="text" class="otp-input" maxlength="1" id="otp6" onkeyup="moveToNext(this, null)" onkeydown="moveToPrev(this, 'otp5')">
+                    </div>
+                </div>
+                
+                <button type="submit" class="btn btn-primary" id="otpBtn">
+                    Verify Email
+                </button>
+                
+                <button type="button" class="btn btn-secondary" onclick="resendOTP()">
+                    Resend Code
+                </button>
+                
+                <a href="#" class="text-link" onclick="cancelOTP(); return false;">← Back to signup</a>
+            </form>
+        </div>
     </div>
     
     <script>
+        let pendingEmail = '';
+        
         function switchTab(tab) {
             // Update tabs
             document.querySelectorAll('.tab').forEach(t => {
@@ -266,7 +349,11 @@
             try {
                 const response = await fetch('/api/auth/login', {
                     method: 'POST',
-                    body: formData
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        email: formData.get('email'),
+                        password: formData.get('password')
+                    })
                 });
                 
                 const data = await response.json();
@@ -280,7 +367,7 @@
                     showAlert(data.message || 'Invalid email or password', 'error');
                 }
             } catch (error) {
-                showAlert('Login failed. Please try again.', 'error');
+                showAlert('Connection error. Please check your internet and try again.', 'error');
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Login';
@@ -306,26 +393,151 @@
             try {
                 const response = await fetch('/api/auth/signup', {
                     method: 'POST',
-                    body: formData
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        name: formData.get('name'),
+                        email: formData.get('email'),
+                        password: password,
+                        phone: formData.get('phone') || null
+                    })
                 });
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    showAlert('Account created! Redirecting...', 'success');
-                    setTimeout(() => {
-                        window.location.href = '/';
-                    }, 1000);
+                    pendingEmail = formData.get('email');
+                    showOTPSection();
                 } else {
                     showAlert(data.message || 'Signup failed', 'error');
                 }
             } catch (error) {
-                showAlert('Signup failed. Please try again.', 'error');
+                showAlert('Connection error. Please check your internet and try again.', 'error');
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Create Account';
             }
         }
+        
+        function showOTPSection() {
+            document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
+            document.getElementById('otpSection').classList.add('active');
+            document.getElementById('otpEmail').textContent = pendingEmail;
+            document.getElementById('otp1').focus();
+            
+            showAlert('Check your email for the verification code', 'success');
+        }
+        
+        async function handleOTPVerification(event) {
+            event.preventDefault();
+            
+            const otp = Array.from({length: 6}, (_, i) => 
+                document.getElementById(`otp${i + 1}`).value
+            ).join('');
+            
+            if (otp.length !== 6) {
+                showAlert('Please enter all 6 digits', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('otpBtn');
+            btn.disabled = true;
+            btn.textContent = 'Verifying...';
+            
+            try {
+                const response = await fetch('/api/auth/verify-email', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        email: pendingEmail,
+                        otp_code: otp
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('Email verified! You can now login.', 'success');
+                    setTimeout(() => {
+                        // Clear OTP inputs
+                        for (let i = 1; i <= 6; i++) {
+                            document.getElementById(`otp${i}`).value = '';
+                        }
+                        // Switch to login tab
+                        document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
+                        document.getElementById('loginSection').classList.add('active');
+                        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                        document.querySelectorAll('.tab')[0].classList.add('active');
+                    }, 2000);
+                } else {
+                    showAlert(data.message || 'Invalid verification code', 'error');
+                }
+            } catch (error) {
+                showAlert('Connection error. Please try again.', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Verify Email';
+            }
+        }
+        
+        async function resendOTP() {
+            try {
+                const response = await fetch(`/api/auth/resend-otp?email=${encodeURIComponent(pendingEmail)}`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('New code sent to your email', 'success');
+                } else {
+                    showAlert(data.message || 'Failed to resend code', 'error');
+                }
+            } catch (error) {
+                showAlert('Connection error. Please try again.', 'error');
+            }
+        }
+        
+        function cancelOTP() {
+            document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
+            document.getElementById('signupSection').classList.add('active');
+            
+            // Clear OTP inputs
+            for (let i = 1; i <= 6; i++) {
+                document.getElementById(`otp${i}`).value = '';
+            }
+        }
+        
+        // OTP input navigation
+        function moveToNext(current, nextId) {
+            if (current.value.length === 1 && nextId) {
+                document.getElementById(nextId).focus();
+            }
+        }
+        
+        function moveToPrev(current, prevId) {
+            if (event.key === 'Backspace' && current.value === '' && prevId) {
+                document.getElementById(prevId).focus();
+            }
+        }
+        
+        // Auto-focus first OTP input
+        document.querySelectorAll('.otp-input').forEach((input, index) => {
+            input.addEventListener('paste', (e) => {
+                e.preventDefault();
+                const pastedData = e.clipboardData.getData('text');
+                const digits = pastedData.replace(/\D/g, '').substring(0, 6);
+                
+                digits.split('').forEach((digit, i) => {
+                    if (i < 6) {
+                        document.getElementById(`otp${i + 1}`).value = digit;
+                    }
+                });
+                
+                if (digits.length === 6) {
+                    document.getElementById('otp6').focus();
+                }
+            });
+        });
     </script>
 </body>
 </html>

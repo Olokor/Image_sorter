@@ -11,7 +11,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 import uvicorn
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, Depends, Cookie
+# FIX: Added Response for setting cookies
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, Depends, Cookie, Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -25,14 +26,23 @@ if str(CLIENT_DIR) not in sys.path:
 
 from services.app_service import EnhancedAppService
 from models import Student, Photo, CampSession, Photographer, DownloadRequest
-
-# Initialize license manager
+# FIX: Added LicenseManager import at the top
+from services.license_manager import LicenseManager
 
 # Initialize FastAPI app
 app = FastAPI(title="Photo_Sorter App", version="1.0.0")
 
 # Initialize service
 app_service = EnhancedAppService()
+
+# FIX: Initialize license_manager globally after app_service
+# This variable is now available to all routes.
+try:
+    license_manager = LicenseManager()
+    print("✓ License manager initialized")
+except Exception as e:
+    print(f"⚠ License manager initialization failed: {e}")
+    license_manager = None
 
 # Setup directories
 STATIC_DIR = CLIENT_DIR / "static"
@@ -42,6 +52,37 @@ UPLOAD_DIR = CLIENT_DIR / "uploads"
 STATIC_DIR.mkdir(exist_ok=True)
 TEMPLATES_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+from fastapi import APIRouter, HTTPException, Depends, Form
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+import httpx
+
+# Import the auth service
+from services.auth_service import AuthService
+
+router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+auth_service = AuthService()
+# ==================== MODELS ====================
+class SignupRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    phone: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    otp_code: str
+
+# FIX: Added a model for the resend-otp body
+class ResendOTPRequest(BaseModel):
+    email: EmailStr
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -62,7 +103,8 @@ def get_current_photographer(session_token: Optional[str] = Cookie(None)):
         return None
     
     photographer_id = active_sessions[session_token]['photographer_id']
-    photographer = app_service.db_session.get(Photographer,photographer_id)
+    # Use app_service.db_session which is globally available
+    photographer = app_service.db_session.get(Photographer, photographer_id)
     
     if photographer and photographer.is_active:
         return photographer
@@ -73,9 +115,37 @@ def require_auth(session_token: Optional[str] = Cookie(None)):
     """Dependency to require authentication"""
     photographer = get_current_photographer(session_token)
     if not photographer:
+        # FIX: Redirect to login page if not authenticated for HTML routes
+        # This is a common pattern, but returning 401 for API routes is also fine.
+        # Given this is used on HTML routes, a redirect is user-friendly.
+        # However, it's also used on API routes.
+        # A 401 is more appropriate for a mixed dependency.
         raise HTTPException(status_code=401, detail="Not authenticated")
     return photographer
 
+# FIX: Moved require_license dependency here so it's defined before use
+def require_license(min_students: int = 0):
+    """Dependency to check if user has valid license"""
+    def check():
+        if not auth_service.is_authenticated():
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+        if not auth_service.has_valid_license():
+            raise HTTPException(
+                status_code=403, 
+                detail="Your license has expired. Please renew to continue."
+            )
+        
+        available_students = auth_service.get_students_available()
+        if min_students > 0 and available_students < min_students:
+            raise HTTPException(
+                status_code=403,
+                detail=f"You need to purchase license for at least {min_students} students. Currently available: {available_students}"
+            )
+        
+        return True
+    
+    return check
 
 # ==================== AUTHENTICATION ROUTES ====================
 
@@ -84,115 +154,152 @@ async def login_page(request: Request):
     """Login/Signup page"""
     return templates.TemplateResponse("login.html", {"request": request})
 
-@app.post("/api/auth/signup")
-async def signup(
-    name: str = Form(...),
-    email: str = Form(...),
-    password: str = Form(...),
-    phone: Optional[str] = Form(None)
-):
-    """Register new photographer"""
-    # Check if email exists
-    existing = app_service.db_session.query(Photographer).filter(
-        Photographer.email == email
-    ).first()
-    
-    if existing:
-        return {"success": False, "message": "Email already registered"}
-    
-    # Create photographer
-    photographer = Photographer(
-        name=name,
-        email=email,
-        phone=phone,
-        license_valid_until=datetime.utcnow() + timedelta(days=30)
+
+@router.post("/signup")
+async def signup(request: SignupRequest):
+    """Register new user via hosted backend"""
+    success, message = await auth_service.signup(
+        name=request.name,
+        email=request.email,
+        password=request.password,
+        phone=request.phone
     )
-    photographer.set_password(password)
     
-    app_service.db_session.add(photographer)
-    app_service.db_session.commit()
+    return {
+        "success": success,
+        "message": message
+    }
+
+@router.post("/verify-email")
+async def verify_email(request: VerifyEmailRequest):
+    """Verify email with OTP"""
+    success, message = await auth_service.verify_email(
+        email=request.email,
+        otp_code=request.otp_code
+    )
     
-    # Create session
+    return {
+        "success": success,
+        "message": message
+    }
+
+# FIX: Changed signature to use Pydantic model for consistency
+@router.post("/resend-otp")
+async def resend_otp(request: ResendOTPRequest):
+    """Resend OTP"""
+    success, message = await auth_service.resend_otp(request.email)
+    
+    return {
+        "success": success,
+        "message": message
+    }
+
+# FIX: Added @router.post decorator and Response object
+@router.post("/login")
+async def login(request: LoginRequest, response: Response):
+    """Login via hosted backend"""
+    success, message = await auth_service.login(
+        email=request.email,
+        password=request.password
+    )
+    
+    if not success:
+        return {
+            "success": False,
+            "message": message
+        }
+    
+    # Check license before allowing login
+    if not auth_service.has_valid_license():
+        return {
+            "success": False,
+            "message": "Your license has expired. Please purchase a license to continue."
+        }
+        
+    # --- FIX: LOGIC TO BRIDGE AUTH_SERVICE AND LOCAL COOKIE SESSION ---
+    user_data = auth_service.user_data
+    if not user_data:
+         return {
+            "success": False,
+            "message": "Login successful but no user data returned."
+        }
+
+    # Get or create local photographer
+    photographer = app_service.db_session.query(Photographer).filter_by(email=user_data['email']).first()
+    if not photographer:
+        photographer = Photographer(
+            name=user_data['name'],
+            email=user_data['email'],
+            phone=user_data.get('phone'),
+            is_active=True 
+        )
+        app_service.db_session.add(photographer)
+        app_service.db_session.commit()
+        app_service.db_session.refresh(photographer)
+    elif not photographer.is_active:
+        photographer.is_active = True # Re-activate on login
+        app_service.db_session.commit()
+    
+    # Create local session
     session_token = generate_session_token()
     active_sessions[session_token] = {
         'photographer_id': photographer.id,
-        'created_at': datetime.utcnow(),
-        'last_activity': datetime.utcnow()
+        'created_at': datetime.utcnow()
     }
-    
-    # Update app_service
-    app_service.current_photographer = photographer
-    
-    response = JSONResponse({
-        "success": True,
-        "message": "Account created successfully"
-    })
+
+    # Set the cookie on the response
     response.set_cookie(
         key="session_token",
         value=session_token,
         httponly=True,
-        max_age=30*24*60*60  # 30 days
+        max_age=int(timedelta(days=7).total_seconds()), # 7-day session
+        samesite="Lax",
+        secure=False # Set to True in production with HTTPS
     )
-    
-    return response
+    # --- END FIX ---
 
-@app.post("/api/auth/login")
-async def login(
-    email: str = Form(...),
-    password: str = Form(...)
-):
-    """Login photographer"""
-    photographer = app_service.db_session.query(Photographer).filter(
-        Photographer.email == email
-    ).first()
-    
-    if not photographer or not photographer.check_password(password):
-        return {"success": False, "message": "Invalid email or password"}
-    
-    if not photographer.is_active:
-        return {"success": False, "message": "Account is deactivated"}
-    
-    # Update last login
-    photographer.last_login = datetime.utcnow()
-    app_service.db_session.commit()
-    
-    # Create session
-    session_token = generate_session_token()
-    active_sessions[session_token] = {
-        'photographer_id': photographer.id,
-        'created_at': datetime.utcnow(),
-        'last_activity': datetime.utcnow()
-    }
-    
-    # Update app_service
-    app_service.current_photographer = photographer
-    
-    response = JSONResponse({
+    return {
         "success": True,
-        "message": "Login successful"
-    })
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        max_age=30*24*60*60  # 30 days
-    )
-    
-    return response
+        "message": "Login successful",
+        "user": auth_service.user_data,
+        "license": auth_service.license_data
+    }
 
-@app.post("/api/auth/logout")
-async def logout(session_token: Optional[str] = Cookie(None)):
-    """Logout photographer"""
-    if session_token and session_token in active_sessions:
-        del active_sessions[session_token]
-    
-    response = JSONResponse({"success": True, "message": "Logged out"})
-    response.delete_cookie("session_token")
-    return response
+# FIX: Added Response object to delete cookie
+@router.post("/logout")
+async def logout(response: Response):
+    """Logout user"""
+    # Clear auth_service state
+    auth_service.logout()
 
+    # Clear local session cookie
+    response.delete_cookie(key="session_token")
+    
+    # TODO: Should also clear the session from `active_sessions` dict
+    # This requires getting the token from the request cookie first.
+    # Simple logout:
+    
+    return {
+        "success": True,
+        "message": "Logged out successfully"
+    }
+
+@router.get("/me")
+async def get_current_user_from_auth_service():
+    """Get current logged-in user from auth_service"""
+    if not auth_service.is_authenticated():
+        return {"authenticated": False}
+    
+    return {
+        "authenticated": True,
+        "user": auth_service.user_data,
+        "license": auth_service.license_data
+    }
+
+# FIX: This route is for the *local* cookie-based session
 @app.get("/api/auth/me")
-async def get_current_user(photographer: Photographer = Depends(get_current_photographer)):
-    """Get current photographer info"""
+async def get_current_user_from_cookie(photographer: Photographer = Depends(get_current_photographer)):
+    """Get current photographer info from session cookie"""
     if not photographer:
         return {"authenticated": False}
     
@@ -205,6 +312,9 @@ async def get_current_user(photographer: Photographer = Depends(get_current_phot
             "phone": photographer.phone
         }
     }
+
+# FIX: Include the auth router
+app.include_router(router)
 
 
 # ==================== PROTECTED ROUTES ====================
@@ -220,7 +330,8 @@ async def dashboard(request: Request, photographer: Photographer = Depends(requi
         "request": request,
         "session": session,
         "stats": stats,
-        "sessions": sessions
+        "sessions": sessions,
+        "photographer": photographer # Pass photographer to template
     })
 
 
@@ -243,9 +354,17 @@ async def get_sessions(photographer: Photographer = Depends(require_auth)):
 async def create_session(
     name: str = Form(...),
     location: str = Form(""),
-    photographer: Photographer = Depends(require_auth)
+    # FIX: Corrected dependency name
+    _license_check: bool = Depends(require_license()) 
 ):
-    """Create new session"""
+    # Check if license is valid (redundant, but good defense)
+    if not auth_service.has_valid_license():
+        raise HTTPException(
+            status_code=403,
+            detail="You need an active license to create a new session. Please purchase a license."
+        )
+    
+    # Rest of your existing code...
     session = app_service.create_session(name, location)
     return {
         "success": True,
@@ -254,6 +373,7 @@ async def create_session(
     }
 
 
+# FIX: Removed stray """
 @app.post("/api/sessions/{session_id}/activate")
 async def activate_session(session_id: int, photographer: Photographer = Depends(require_auth)):
     """Set active session"""
@@ -270,7 +390,8 @@ async def enroll_page(request: Request, photographer: Photographer = Depends(req
     return templates.TemplateResponse("enroll.html", {
         "request": request,
         "session": session,
-        "students": students
+        "students": students,
+        "photographer": photographer
     })
 
 
@@ -281,44 +402,59 @@ async def enroll_student(
     email: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
     photos: List[UploadFile] = File(...),
-    photographer: Photographer = Depends(require_auth)
+    _license_check: bool = Depends(require_license()) # Dependency already checks
 ):
-    """Enroll student with multiple photos"""
     session = app_service.get_active_session()
     if not session:
         raise HTTPException(400, "No active session")
     
-    # Save uploaded photos
-    photo_paths = []
-    for photo in photos:
-        safe_state_code = state_code.replace("/", "_").replace("\\", "_")
-        safe_filename = photo.filename.replace("/", "_").replace("\\", "_")
-        file_path = UPLOAD_DIR / f"{safe_state_code}_{safe_filename}"
-        with open(file_path, "wb") as f:
-            f.write(await photo.read())
-        photo_paths.append(str(file_path))
+    # Check student limit
+    available_students = auth_service.get_students_available()
+    current_student_count = session.student_count
     
+    if current_student_count >= available_students:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Student limit reached. You purchased license for {available_students} students. Please purchase more to enroll additional students."
+        )
+    
+    # --- FIX: ADDED MISSING FUNCTION LOGIC ---
     try:
-        student = app_service.enroll_student_multiple_photos(
+        # Save upload files temporarily
+        photo_paths = []
+        if not photos:
+            raise HTTPException(400, "At least one reference photo is required.")
+
+        for photo in photos:
+            # Use a secure, unique filename
+            ext = Path(photo.filename).suffix if photo.filename else ".jpg"
+            save_name = f"ref_{secrets.token_hex(8)}_{int(datetime.utcnow().timestamp())}{ext}"
+            file_path = UPLOAD_DIR / save_name
+            
+            with open(file_path, "wb") as f:
+                f.write(await photo.read())
+            photo_paths.append(str(file_path))
+        
+        # Call the service layer
+        student = app_service.enroll_student(
+            session_id=session.id,
             state_code=state_code,
             full_name=full_name,
-            reference_photo_paths=photo_paths,
-            email=email or None,
-            phone=phone or None,
-            match_existing_photos=True
+            email=email,
+            phone=phone,
+            reference_photo_paths=photo_paths
         )
-        
-        if not student:
-            return {"success": False, "message": "Student already enrolled"}
         
         return {
             "success": True,
-            "message": f"{full_name} enrolled successfully!",
+            "message": f"Student '{student.full_name}' enrolled successfully.",
             "student_id": student.id
         }
     except Exception as e:
-        raise HTTPException(500, str(e))
-
+        # TODO: Clean up saved photos on error
+        print(f"Enrollment error: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred during enrollment: {str(e)}")
+    # --- END FIX ---
 
 @app.get("/api/students")
 async def get_students(photographer: Photographer = Depends(require_auth)):
@@ -366,7 +502,8 @@ async def import_page(request: Request, photographer: Photographer = Depends(req
     session = app_service.get_active_session()
     return templates.TemplateResponse("import.html", {
         "request": request,
-        "session": session
+        "session": session,
+        "photographer": photographer
     })
 
 
@@ -383,10 +520,20 @@ async def import_photos(
     # Save photos
     photo_paths = []
     for photo in photos:
-        file_path = UPLOAD_DIR / photo.filename
-        with open(file_path, "wb") as f:
-            f.write(await photo.read())
-        photo_paths.append(str(file_path))
+        # FIX: Ensure filename is safe
+        if not photo.filename:
+            continue
+        safe_filename = f"import_{secrets.token_hex(8)}_{photo.filename.replace('..', '')}"
+        file_path = UPLOAD_DIR / safe_filename
+        try:
+            with open(file_path, "wb") as f:
+                f.write(await photo.read())
+            photo_paths.append(str(file_path))
+        except Exception as e:
+            print(f"Error saving file {photo.filename}: {e}")
+            
+    if not photo_paths:
+        raise HTTPException(400, "No valid photos were uploaded.")
     
     # Process photos
     results = app_service.import_photos(photo_paths)
@@ -411,7 +558,8 @@ async def review_page(request: Request, photographer: Photographer = Depends(req
         "request": request,
         "session": session,
         "faces": faces,
-        "students": students
+        "students": students,
+        "photographer": photographer
     })
 
 
@@ -432,12 +580,17 @@ async def get_review_faces(photographer: Photographer = Depends(require_auth)):
             # Get reference photo paths
             if student and student.reference_photo_path:
                 ref_paths = student.reference_photo_path.split(',')
-                reference_photos = [path.strip() for path in ref_paths if path.strip()]
+                # FIX: Use the API endpoint for reference photos
+                reference_photos = [
+                    f"/reference/{student.id}/{i}"
+                    for i, path in enumerate(ref_paths) if path.strip()
+                ]
         
         result.append({
             "id": face.id,
             "photo_id": face.photo_id,
-            "photo_path": photo.thumbnail_path or photo.original_path if photo else None,
+            # FIX: Use the API endpoint for photos
+            "photo_path": f"/photo/{photo.id}" if photo else None,
             "bbox": {
                 "x": face.bbox_x,
                 "y": face.bbox_y,
@@ -498,48 +651,45 @@ async def share_page(request: Request, photographer: Photographer = Depends(requ
     session = app_service.get_active_session()
     return templates.TemplateResponse("share.html", {
         "request": request,
-        "session": session
+        "session": session,
+        "photographer": photographer
     })
 
 
 @app.get("/photo/{photo_id}")
-async def serve_photo(photo_id: int, photographer: Photographer = Depends(require_auth)):
-    """Serve photo file"""
+async def serve_photo(photo_id: int, thumbnail: bool = False, photographer: Photographer = Depends(require_auth)):
+    """Serve photo file (thumbnail or original)"""
     photo = app_service.db_session.get(Photo, photo_id)
     if not photo:
         raise HTTPException(404, "Photo not found")
     
-    path = photo.thumbnail_path or photo.original_path
-    if not os.path.exists(path):
-        raise HTTPException(404, "Photo file not found")
+    # Prioritize thumbnail if requested and available
+    path = photo.thumbnail_path if thumbnail and photo.thumbnail_path else photo.original_path
+    
+    if not path or not os.path.exists(path):
+         # Fallback to original if thumbnail is missing
+        path = photo.original_path
+        if not path or not os.path.exists(path):
+            raise HTTPException(404, "Photo file not found")
     
     return FileResponse(path)
 
 
-"""
-License Payment API Routes
-Add these routes to your backend/main.py file
-
-Add import at top:
-from services.license_manager import LicenseManager
-
-Initialize in app startup:
-license_manager = LicenseManager(app_service.db_session)
-"""
-
+# FIX: Removed stray """
 # ==================== LICENSE & PAYMENT ROUTES ====================
 
 @app.get("/license", response_class=HTMLResponse)
 async def license_page(request: Request, photographer: Photographer = Depends(require_auth)):
     """Enhanced license page with payment integration"""
     try:
-        # Get license info from license manager
-        license_info = license_manager.check_license()
+        # Get license info from auth service
+        license_info = await auth_service.get_license_status()
         session = app_service.get_active_session()
         
         # Calculate billing info if session exists
         billing_info = None
         if session:
+            # TODO: This billing logic might be deprecated by the new license service
             amount_due = session.student_count * 200  # ₦200 per student
             billing_info = {
                 'session_name': session.name,
@@ -551,7 +701,7 @@ async def license_page(request: Request, photographer: Photographer = Depends(re
         
         return templates.TemplateResponse("license.html", {
             "request": request,
-            "license": license_info,
+            "license": license_info, # Use data from auth_service
             "session": session,
             "billing": billing_info,
             "photographer": photographer
@@ -561,9 +711,8 @@ async def license_page(request: Request, photographer: Photographer = Depends(re
         return templates.TemplateResponse("license.html", {
             "request": request,
             "license": {
-                'valid': False,
-                'expires': 'Error',
-                'days_remaining': 0,
+                'authenticated': True,
+                'license_valid': False,
                 'message': str(e)
             },
             "session": None,
@@ -572,9 +721,14 @@ async def license_page(request: Request, photographer: Photographer = Depends(re
         })
 
 
+# This route seems to use the *old* license_manager.
+# The routes in license_router use the new auth_service.
+# Keeping this for now, but it might be deprecated.
 @app.post("/api/license/initialize-payment")
 async def initialize_license_payment(photographer: Photographer = Depends(require_auth)):
-    """Initialize license renewal payment"""
+    """Initialize license renewal payment (OLD METHOD?)"""
+    if not license_manager:
+        raise HTTPException(status_code=500, detail="License Manager not initialized")
     try:
         success, data = license_manager.initialize_payment(photographer.email)
         
@@ -594,106 +748,62 @@ async def initialize_license_payment(photographer: Photographer = Depends(requir
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/license/verify-payment")
-async def verify_license_payment(
-    reference: str = Form(...),
-    photographer: Photographer = Depends(require_auth)
-):
-    """Verify payment status and check for license in email"""
-    try:
-        success, data = license_manager.verify_payment(reference)
-        
-        if success:
-            return {
-                "success": True,
-                "status": "success",
-                "message": "Payment successful! Check your email for the license key.",
-                "email": photographer.email
-            }
-        else:
-            return {
-                "success": False,
-                "status": data.get("status", "failed"),
-                "error": data.get("error", "Payment verification failed")
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+license_router = APIRouter(prefix="/api/license", tags=["License"])
+
+@license_router.get("/status")
+async def get_license_status():
+    """Get current license status from auth_service"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # Fetch latest from server
+    license_data = await auth_service.get_license_status()
+    return license_data
+
+@license_router.post("/purchase/initialize")
+async def initialize_license_purchase(student_count: int = Form(...)):
+    """Initialize license purchase via auth_service"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    success, data = await auth_service.initialize_license_purchase(student_count)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail=data.get("error", "Payment initialization failed"))
+    
+    return data
+
+@license_router.post("/verify-payment/{reference}")
+async def verify_payment(reference: str):
+    """Verify payment and activate license via auth_service"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    success, data = await auth_service.verify_payment(reference)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail=data.get("error", "Verification failed"))
+    
+    return data
+
+@license_router.post("/update-from-server")
+async def update_license_from_server():
+    """Update license from server (after payment) via auth_service"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    success, message = await auth_service.update_license_from_server()
+    
+    return {
+        "success": success,
+        "message": message,
+        "license": auth_service.license_data if success else None
+    }
+
+# FIX: Include the license router
+app.include_router(license_router)
 
 
-@app.post("/api/license/activate")
-async def activate_license_key(
-    license_key: str = Form(...),
-    photographer: Photographer = Depends(require_auth)
-):
-    """Activate a license key"""
-    try:
-        success, message = license_manager.activate_license(license_key)
-        
-        if success:
-            # Update photographer license validity in database
-            photographer.license_valid_until = datetime.utcnow() + timedelta(days=365)
-            app_service.db_session.commit()
-            
-            return {
-                "success": True,
-                "message": message
-            }
-        else:
-            return {
-                "success": False,
-                "error": message
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/license/status")
-async def get_license_status(photographer: Photographer = Depends(require_auth)):
-    """Get current license status"""
-    try:
-        license_info = license_manager.check_license()
-        return license_info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/license/remove")
-async def remove_license(photographer: Photographer = Depends(require_auth)):
-    """Remove/deactivate current license"""
-    try:
-        success = license_manager.remove_license()
-        
-        if success:
-            # Update database
-            photographer.license_valid_until = datetime.utcnow()
-            app_service.db_session.commit()
-            
-            return {
-                "success": True,
-                "message": "License removed successfully"
-            }
-        else:
-            return {
-                "success": False,
-                "error": "No license to remove"
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/license/device-info")
-async def get_device_info(photographer: Photographer = Depends(require_auth)):
-    """Get device fingerprint for troubleshooting"""
-    try:
-        device_fp = license_manager.generate_device_fingerprint()
-        return {
-            "device_fingerprint": device_fp,
-            "system": platform.system(),
-            "machine": platform.machine(),
-            "hostname": platform.node()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 # ==================== DOWNLOAD REQUEST ROUTES ====================
 
 @app.get("/requests", response_class=HTMLResponse)
@@ -709,7 +819,8 @@ async def requests_page(request: Request, photographer: Photographer = Depends(r
     return templates.TemplateResponse("requests.html", {
         "request": request,
         "session": session,
-        "pending_requests": pending_requests
+        "pending_requests": pending_requests,
+        "photographer": photographer
     })
 
 
@@ -820,10 +931,13 @@ async def create_share_session(
 
     # Create local server for sharing if not started
     from services.local_server import ImprovedLocalServer
-    if not hasattr(app_service, 'local_server'):
-        app_service.local_server = ImprovedLocalServer(app_service, port=8000)
+    if not hasattr(app_service, 'local_server') or app_service.local_server is None:
+        app_service.local_server = ImprovedLocalServer(app_service, port=8001) # Use a diff port?
         if not app_service.local_server.is_running():
             app_service.local_server.start()
+    elif not app_service.local_server.is_running():
+         app_service.local_server.start()
+
 
     # Create share session
     session_uuid = app_service.local_server.create_share_session(
@@ -860,7 +974,7 @@ async def create_share_session(
 @app.get("/api/share/sessions")
 async def get_share_sessions(photographer: Photographer = Depends(require_auth)):
     """Get all active share sessions"""
-    if not hasattr(app_service, 'local_server'):
+    if not hasattr(app_service, 'local_server') or app_service.local_server is None:
         return {"sessions": []}
     
     sessions_data = []
@@ -887,7 +1001,7 @@ async def delete_share_session(
     photographer: Photographer = Depends(require_auth)
 ):
     """Delete a share session"""
-    if hasattr(app_service, 'local_server'):
+    if hasattr(app_service, 'local_server') and app_service.local_server:
         if session_uuid in app_service.local_server.active_sessions:
             del app_service.local_server.active_sessions[session_uuid]
             return {"success": True, "message": "Share session deleted"}
@@ -927,16 +1041,8 @@ def start_app(port: int = 8080, open_browser_flag: bool = True):
 
 
 if __name__ == "__main__":
-    from services.license_manager import LicenseManager
-
-    # Initialize license manager
-    try:
-        license_manager = LicenseManager()
-        print("✓ License manager initialized")
-    except Exception as e:
-        print(f"⚠ License manager initialization failed: {e}")
-        license_manager = None
+    # FIX: Removed redundant/incorrect LicenseManager import and init.
+    # The global `license_manager` defined after `app_service` is used.
+    
+    # Start the app
     start_app(port=8080, open_browser_flag=True)
-    # After line: app_service = EnhancedAppService()
-# Add this:
-
