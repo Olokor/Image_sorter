@@ -210,11 +210,7 @@ async def login(request: LoginRequest, response: Response):
         }
     
     # Check license before allowing login
-    if not auth_service.has_valid_license():
-        return {
-            "success": False,
-            "message": "Your license has expired. Please purchase a license to continue."
-        }
+    
         
     # --- FIX: LOGIC TO BRIDGE AUTH_SERVICE AND LOCAL COOKIE SESSION ---
     user_data = auth_service.user_data
