@@ -506,6 +506,111 @@ async def license_page(request: Request, photographer: Photographer = Depends(re
             "photographer": photographer
         })
 
+# ==================== SHARE ROUTES ====================
+
+@app.post("/api/share/create")
+async def create_share_session(
+    state_code: str = Form(...),
+    expiry_hours: int = Form(24),
+    download_limit: int = Form(50),
+    photographer: Photographer = Depends(require_auth)
+):
+    """Create a share session for a student"""
+    session = app_service.get_active_session()
+    if not session:
+        raise HTTPException(400, "No active session")
+
+    # Search student
+    student = app_service.search_student(state_code)
+    if not student:
+        raise HTTPException(404, "Student not found")
+
+    # Ensure student has photos
+    photos = app_service.get_student_photos(student)
+    if not photos:
+        raise HTTPException(400, "Student has no gallery photos")
+
+    # Create local server for sharing if not started
+    from services.local_server import ImprovedLocalServer
+    if not hasattr(app_service, 'local_server') or app_service.local_server is None:
+        app_service.local_server = ImprovedLocalServer(app_service, port=8001) # Use a diff port?
+        if not app_service.local_server.is_running():
+            app_service.local_server.start()
+    elif not app_service.local_server.is_running():
+         app_service.local_server.start()
+
+
+    # Create share session
+    session_uuid = app_service.local_server.create_share_session(
+        student_id=student.id,
+        expiry_hours=expiry_hours,
+        download_limit=download_limit
+    )
+
+    share_url = app_service.local_server.get_share_url(session_uuid)
+
+    # Generate QR Code (Base64)
+    import qrcode, base64
+    from io import BytesIO
+
+    qr_img = qrcode.make(share_url)
+    buffer = BytesIO()
+    qr_img.save(buffer, format="PNG")
+    qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+    return {
+        "success": True,
+        "session_uuid": session_uuid,
+        "share_url": share_url,
+        "qr_code": f"data:image/png;base64,{qr_base64}",
+        "student": {
+            "id": student.id,
+            "name": student.full_name,
+            "state_code": student.state_code,
+            "photo_count": len(photos),
+        }
+    }
+
+
+@app.get("/api/share/sessions")
+async def get_share_sessions(photographer: Photographer = Depends(require_auth)):
+    """Get all active share sessions"""
+    if not hasattr(app_service, 'local_server') or app_service.local_server is None:
+        return {"sessions": []}
+    
+    sessions_data = []
+    for uuid, data in app_service.local_server.active_sessions.items():
+        student = app_service.db_session.query(Student).get(data['student_id'])
+        if student:
+            sessions_data.append({
+                "uuid": uuid,
+                "student_name": student.full_name,
+                "student_state_code": student.state_code,
+                "created_at": data['created_at'].isoformat(),
+                "expires_at": data['expires_at'].isoformat(),
+                "downloads_used": data['downloads_used'],
+                "download_limit": data['download_limit'],
+                "access_count": data['access_count']
+            })
+    
+    return {"sessions": sessions_data}
+
+
+@app.delete("/api/share/sessions/{session_uuid}")
+async def delete_share_session(
+    session_uuid: str,
+    photographer: Photographer = Depends(require_auth)
+):
+    """Delete a share session"""
+    if hasattr(app_service, 'local_server') and app_service.local_server:
+        if session_uuid in app_service.local_server.active_sessions:
+            del app_service.local_server.active_sessions[session_uuid]
+            return {"success": True, "message": "Share session deleted"}
+    
+    raise HTTPException(404, "Share session not found")
+
+
+
 
 # ==================== OTHER PROTECTED ROUTES ====================
 # (enroll, import, review, share, etc. - all use require_auth dependency)
@@ -522,6 +627,311 @@ async def enroll_page(request: Request, photographer: Photographer = Depends(req
         "students": students,
         "photographer": photographer
     })
+@app.post("/api/sessions/{session_id}/activate")
+async def activate_session(session_id: int, photographer: Photographer = Depends(require_auth)):
+    """Set active session"""
+    app_service.set_active_session(session_id)
+    return {"success": True, "message": "Session activated"}
+
+
+@app.get("/enroll", response_class=HTMLResponse)
+async def enroll_page(request: Request, photographer: Photographer = Depends(require_auth)):
+    """Student enrollment page"""
+    session = app_service.get_active_session()
+    students = app_service.get_students() if session else []
+    
+    return templates.TemplateResponse("enroll.html", {
+        "request": request,
+        "session": session,
+        "students": students,
+        "photographer": photographer
+    })
+
+
+@app.post("/api/enroll")
+async def enroll_student(
+    state_code: str = Form(...),
+    full_name: str = Form(...),
+    email: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    photos: List[UploadFile] = File(...),
+    photographer: Photographer = Depends(require_auth),
+    _license_check: bool = Depends(require_license())
+):
+    session = app_service.get_active_session()
+    if not session:
+        raise HTTPException(400, "No active session")
+    
+    # Check student limit
+    available_students = auth_service.get_students_available()
+    current_student_count = session.student_count
+    
+    if current_student_count >= available_students:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Student limit reached. You purchased license for {available_students} students. Please purchase more to enroll additional students."
+        )
+    
+    try:
+        # Save upload files temporarily
+        photo_paths = []
+        if not photos:
+            raise HTTPException(400, "At least one reference photo is required.")
+
+        for photo in photos:
+            ext = Path(photo.filename).suffix if photo.filename else ".jpg"
+            save_name = f"ref_{secrets.token_hex(8)}_{int(datetime.utcnow().timestamp())}{ext}"
+            file_path = UPLOAD_DIR / save_name
+            
+            with open(file_path, "wb") as f:
+                f.write(await photo.read())
+            photo_paths.append(str(file_path))
+        
+        # Call the service layer (use the multiple photos method)
+        student = app_service.enroll_student_multiple_photos(
+            state_code=state_code,
+            full_name=full_name,
+            reference_photo_paths=photo_paths,
+            email=email,
+            phone=phone,
+            match_existing_photos=True
+        )
+        
+        # Update photographer's student count tracking
+        photographer.current_session_student_count = (photographer.current_session_student_count or 0) + 1
+        photographer.total_students_registered = (photographer.total_students_registered or 0) + 1
+        app_service.db_session.commit()
+        
+        return {
+            "success": True,
+            "message": f"Student '{student.full_name}' enrolled successfully.",
+            "student_id": student.id
+        }
+    except Exception as e:
+        print(f"Enrollment error: {e}")
+        # Rollback on error
+        app_service.db_session.rollback()
+        raise HTTPException(status_code=500, detail=f"An error occurred during enrollment: {str(e)}")
+
+
+@app.get("/api/students")
+async def get_students(photographer: Photographer = Depends(require_auth)):
+    """Get all students in current session with actual photo counts"""
+    students = app_service.get_students()
+    
+    result = []
+    for s in students:
+        # Get ACTUAL photo count from gallery (matched photos)
+        photos = app_service.get_student_photos(s)
+        actual_photo_count = len(photos)
+        
+        # Get reference photo count
+        ref_photo_count = 0
+        if s.reference_photo_path:
+            ref_photo_count = len(s.reference_photo_path.split(','))
+        
+        result.append({
+            "id": s.id,
+            "state_code": s.state_code,
+            "full_name": s.full_name,
+            "email": s.email,
+            "phone": s.phone,
+            "registered_at": s.registered_at.isoformat(),
+            "photo_count": actual_photo_count,  # Gallery photos (matched)
+            "reference_photo_count": ref_photo_count,  # Enrollment photos
+            "total_downloads": s.total_downloads or 0  # Total downloads
+        })
+    
+    return result
+
+
+@app.delete("/api/students/{student_id}")
+async def delete_student(student_id: int, photographer: Photographer = Depends(require_auth)):
+    """Delete a student"""
+    success = app_service.delete_student(student_id)
+    if success:
+        return {"success": True, "message": "Student deleted"}
+    raise HTTPException(404, "Student not found")
+
+
+@app.get("/import", response_class=HTMLResponse)
+async def import_page(request: Request, photographer: Photographer = Depends(require_auth)):
+    """Photo import page"""
+    session = app_service.get_active_session()
+    return templates.TemplateResponse("import.html", {
+        "request": request,
+        "session": session,
+        "photographer": photographer
+    })
+
+
+@app.post("/api/import")
+async def import_photos(
+    photos: List[UploadFile] = File(...),
+    photographer: Photographer = Depends(require_auth)
+):
+    """Import and process photos"""
+    session = app_service.get_active_session()
+    if not session:
+        raise HTTPException(400, "No active session")
+    
+    # Save photos
+    photo_paths = []
+    for photo in photos:
+        # FIX: Ensure filename is safe
+        if not photo.filename:
+            continue
+        safe_filename = f"import_{secrets.token_hex(8)}_{photo.filename.replace('..', '')}"
+        file_path = UPLOAD_DIR / safe_filename
+        try:
+            with open(file_path, "wb") as f:
+                f.write(await photo.read())
+            photo_paths.append(str(file_path))
+        except Exception as e:
+            print(f"Error saving file {photo.filename}: {e}")
+            
+    if not photo_paths:
+        raise HTTPException(400, "No valid photos were uploaded.")
+    
+    # Process photos
+    results = app_service.import_photos(photo_paths)
+    
+    return {
+        "success": True,
+        "processed": results['processed'],
+        "skipped": results['skipped'],
+        "faces_detected": results['faces_detected'],
+        "faces_matched": results['faces_matched']
+    }
+
+
+@app.get("/review", response_class=HTMLResponse)
+async def review_page(request: Request, photographer: Photographer = Depends(require_auth)):
+    """Review matches page"""
+    session = app_service.get_active_session()
+    faces = app_service.get_faces_needing_review() if session else []
+    students = app_service.get_students() if session else []
+    
+    return templates.TemplateResponse("review.html", {
+        "request": request,
+        "session": session,
+        "faces": faces,
+        "students": students,
+        "photographer": photographer
+    })
+
+
+@app.get("/api/review/faces")
+async def get_review_faces(photographer: Photographer = Depends(require_auth)):
+    """Get faces needing review with reference photos"""
+    faces = app_service.get_faces_needing_review()
+    result = []
+    
+    for face in faces:
+        photo = app_service.db_session.query(Photo).get(face.photo_id)
+        student = None
+        reference_photos = []
+        
+        if face.student_id:
+            student = app_service.db_session.get(Student, face.student_id)
+            
+            # Get reference photo paths
+            if student and student.reference_photo_path:
+                ref_paths = student.reference_photo_path.split(',')
+                # FIX: Use the API endpoint for reference photos
+                reference_photos = [
+                    f"/reference/{student.id}/{i}"
+                    for i, path in enumerate(ref_paths) if path.strip()
+                ]
+        
+        result.append({
+            "id": face.id,
+            "photo_id": face.photo_id,
+            # FIX: Use the API endpoint for photos
+            "photo_path": f"/photo/{photo.id}" if photo else None,
+            "bbox": {
+                "x": face.bbox_x,
+                "y": face.bbox_y,
+                "width": face.bbox_width,
+                "height": face.bbox_height
+            },
+            "match_confidence": face.match_confidence,
+            "suggested_student": {
+                "id": student.id,
+                "name": student.full_name,
+                "state_code": student.state_code,
+                "reference_photos": reference_photos
+            } if student else None
+        })
+    
+    return result
+
+
+@app.get("/reference/{student_id}/{photo_index}")
+async def serve_reference_photo(
+    student_id: int,
+    photo_index: int,
+    photographer: Photographer = Depends(require_auth)
+):
+    """Serve student reference photo"""
+    student = app_service.db_session.get(Student, student_id)
+    if not student or not student.reference_photo_path:
+        raise HTTPException(404, "Reference photo not found")
+    
+    ref_paths = student.reference_photo_path.split(',')
+    ref_paths = [p.strip() for p in ref_paths if p.strip()]
+    
+    if photo_index >= len(ref_paths):
+        raise HTTPException(404, "Photo index out of range")
+    
+    photo_path = ref_paths[photo_index]
+    
+    if not os.path.exists(photo_path):
+        raise HTTPException(404, "Photo file not found")
+    
+    return FileResponse(photo_path)
+
+
+@app.post("/api/review/{face_id}/confirm")
+async def confirm_match(
+    face_id: int,
+    student_id: int = Form(...),
+    photographer: Photographer = Depends(require_auth)
+):
+    """Confirm face match"""
+    app_service.confirm_match(face_id, student_id)
+    return {"success": True, "message": "Match confirmed"}
+
+
+@app.get("/share", response_class=HTMLResponse)
+async def share_page(request: Request, photographer: Photographer = Depends(require_auth)):
+    """Share/QR page"""
+    session = app_service.get_active_session()
+    return templates.TemplateResponse("share.html", {
+        "request": request,
+        "session": session,
+        "photographer": photographer
+    })
+
+
+@app.get("/photo/{photo_id}")
+async def serve_photo(photo_id: int, thumbnail: bool = False, photographer: Photographer = Depends(require_auth)):
+    """Serve photo file (thumbnail or original)"""
+    photo = app_service.db_session.get(Photo, photo_id)
+    if not photo:
+        raise HTTPException(404, "Photo not found")
+    
+    # Prioritize thumbnail if requested and available
+    path = photo.thumbnail_path if thumbnail and photo.thumbnail_path else photo.original_path
+    
+    if not path or not os.path.exists(path):
+         # Fallback to original if thumbnail is missing
+        path = photo.original_path
+        if not path or not os.path.exists(path):
+            raise HTTPException(404, "Photo file not found")
+    
+    return FileResponse(path)
+
 
 
 # ==================== STARTUP & SHUTDOWN ====================
