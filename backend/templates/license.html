@@ -285,6 +285,7 @@
 
 {% block extra_js %}
 <script>
+// JavaScript for license.html
 let studentCount = 10;
 const pricePerStudent = 200;
 let currentPaymentReference = null;
@@ -312,15 +313,28 @@ async function initializePayment() {
     document.getElementById('paymentModal').classList.add('active');
     
     try {
-        const response = await fetch('127.0.0.1/license/purchase/initialize', {
+        // Create FormData
+        const formData = new FormData();
+        formData.append('student_count', studentCount);
+        
+        console.log('🔄 Initializing payment for', studentCount, 'students...');
+        
+        // Call local backend API (which will forward to hosted backend with JWT)
+        const response = await fetch('/api/license/purchase/initialize', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                student_count: studentCount
-            })
+            body: formData
         });
         
+        console.log('📥 Response status:', response.status);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ Response error:', errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
         const data = await response.json();
+        console.log('📦 Response data:', data);
         
         if (!data.success) {
             throw new Error(data.error || 'Payment initialization failed');
@@ -330,6 +344,9 @@ async function initializePayment() {
         
         // Hide modal
         document.getElementById('paymentModal').classList.remove('active');
+        
+        console.log('✓ Payment initialized:', data.reference);
+        console.log('💳 Opening Paystack with key:', data.public_key);
         
         // Initialize Paystack popup
         const handler = PaystackPop.setup({
@@ -353,10 +370,12 @@ async function initializePayment() {
                 ]
             },
             callback: function(response) {
+                console.log('✓ Paystack payment successful:', response.reference);
                 showMessage('Payment successful! Verifying...', 'success');
                 verifyPayment(response.reference);
             },
             onClose: function() {
+                console.log('⚠ Paystack popup closed');
                 showMessage('Payment cancelled', 'info');
             }
         });
@@ -364,6 +383,7 @@ async function initializePayment() {
         handler.openIframe();
         
     } catch (error) {
+        console.error('❌ Payment initialization error:', error);
         document.getElementById('paymentModal').classList.remove('active');
         showMessage('Error: ' + error.message, 'error');
     }
@@ -371,11 +391,16 @@ async function initializePayment() {
 
 async function verifyPayment(reference) {
     try {
+        console.log('🔄 Verifying payment:', reference);
+        
         const response = await fetch(`/api/license/verify-payment/${reference}`, {
             method: 'POST'
         });
         
+        console.log('📥 Verification response status:', response.status);
+        
         const data = await response.json();
+        console.log('📦 Verification data:', data);
         
         if (data.success) {
             showMessage('✓ Payment verified! License activated. Refreshing...', 'success');
@@ -386,17 +411,23 @@ async function verifyPayment(reference) {
             showMessage('Payment verification pending. Please click "Update License from Server" in a moment.', 'info');
         }
     } catch (error) {
+        console.error('❌ Verification error:', error);
         showMessage('Verification in progress. Click "Update License from Server" to check status.', 'info');
     }
 }
 
 async function updateLicenseFromServer() {
     try {
+        console.log('🔄 Updating license from server...');
+        
         const response = await fetch('/api/license/update-from-server', {
             method: 'POST'
         });
         
+        console.log('📥 Update response status:', response.status);
+        
         const data = await response.json();
+        console.log('📦 Update data:', data);
         
         if (data.success) {
             showMessage('✓ ' + data.message, 'success');
@@ -407,6 +438,7 @@ async function updateLicenseFromServer() {
             showMessage(data.message || 'No updates available', 'info');
         }
     } catch (error) {
+        console.error('❌ Update error:', error);
         showMessage('Connection error. Please check your internet connection.', 'error');
     }
 }
