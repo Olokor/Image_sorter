@@ -11,9 +11,10 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Tuple
+import os
 
-# Configuration
-API_BASE_URL = "https://api.photosorter.com"  # Your hosted backend URL
+# Configuration - FIX: Use environment variable with local fallback
+API_BASE_URL = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
 LOCAL_CONFIG_PATH = Path.home() / ".photosorter" / "config.json"
 
 class AuthService:
@@ -28,6 +29,8 @@ class AuthService:
         
         # Load saved session
         self.load_session()
+        
+        print(f"🔗 AuthService initialized - API URL: {self.api_url}")
     
     def generate_device_fingerprint(self) -> str:
         """Generate unique device fingerprint"""
@@ -91,7 +94,7 @@ class AuthService:
     async def signup(self, name: str, email: str, password: str, phone: Optional[str] = None) -> Tuple[bool, str]:
         """Register new user"""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/auth/signup",
                     json={
@@ -99,74 +102,88 @@ class AuthService:
                         "email": email,
                         "password": password,
                         "phone": phone
-                    },
-                    timeout=30.0
+                    }
                 )
             
+            # FIX: Better error handling
             if response.status_code == 200:
                 data = response.json()
                 return True, data.get("message", "OTP sent to your email")
             else:
-                error = response.json()
-                return False, error.get("detail", "Signup failed")
+                try:
+                    error = response.json()
+                    return False, error.get("detail", f"Signup failed (HTTP {response.status_code})")
+                except:
+                    return False, f"Signup failed - Server returned {response.status_code}"
         
+        except httpx.ConnectError:
+            return False, f"Cannot connect to server at {self.api_url}. Is the backend running?"
+        except httpx.TimeoutException:
+            return False, "Connection timeout. Please check your internet connection."
         except Exception as e:
             return False, f"Connection error: {str(e)}"
     
     async def verify_email(self, email: str, otp_code: str) -> Tuple[bool, str]:
         """Verify email with OTP"""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/auth/verify-email",
                     json={
                         "email": email,
                         "otp_code": otp_code
-                    },
-                    timeout=30.0
+                    }
                 )
             
             if response.status_code == 200:
                 data = response.json()
                 return True, data.get("message", "Email verified!")
             else:
-                error = response.json()
-                return False, error.get("detail", "Verification failed")
+                try:
+                    error = response.json()
+                    return False, error.get("detail", "Verification failed")
+                except:
+                    return False, f"Verification failed (HTTP {response.status_code})"
         
+        except httpx.ConnectError:
+            return False, f"Cannot connect to server at {self.api_url}"
         except Exception as e:
             return False, f"Connection error: {str(e)}"
     
     async def resend_otp(self, email: str) -> Tuple[bool, str]:
         """Resend OTP"""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/auth/resend-otp",
-                    params={"email": email},
-                    timeout=30.0
+                    json={"email": email}
                 )
             
             if response.status_code == 200:
                 return True, "OTP sent to your email"
             else:
-                error = response.json()
-                return False, error.get("detail", "Failed to send OTP")
+                try:
+                    error = response.json()
+                    return False, error.get("detail", "Failed to send OTP")
+                except:
+                    return False, f"Failed (HTTP {response.status_code})"
         
+        except httpx.ConnectError:
+            return False, f"Cannot connect to server at {self.api_url}"
         except Exception as e:
             return False, f"Connection error: {str(e)}"
     
     async def login(self, email: str, password: str) -> Tuple[bool, str]:
         """Login and get JWT token"""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/auth/login",
                     json={
                         "email": email,
                         "password": password,
                         "device_fingerprint": self.device_fingerprint
-                    },
-                    timeout=30.0
+                    }
                 )
             
             if response.status_code == 200:
@@ -181,9 +198,16 @@ class AuthService:
                 
                 return True, "Login successful"
             else:
-                error = response.json()
-                return False, error.get("detail", "Login failed")
+                try:
+                    error = response.json()
+                    return False, error.get("detail", "Login failed")
+                except:
+                    return False, f"Login failed (HTTP {response.status_code})"
         
+        except httpx.ConnectError:
+            return False, f"Cannot connect to server at {self.api_url}. Is the backend running?"
+        except httpx.TimeoutException:
+            return False, "Connection timeout. Please check your internet connection."
         except Exception as e:
             return False, f"Connection error: {str(e)}"
     
@@ -213,11 +237,10 @@ class AuthService:
             return {"valid": False, "message": "Not authenticated"}
         
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     f"{self.api_url}/license/status",
-                    headers={"Authorization": f"Bearer {self.token}"},
-                    timeout=30.0
+                    headers={"Authorization": f"Bearer {self.token}"}
                 )
             
             if response.status_code == 200:
@@ -236,22 +259,24 @@ class AuthService:
             return False, {"error": "Not authenticated"}
         
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/license/purchase/initialize",
                     headers={"Authorization": f"Bearer {self.token}"},
                     json={
                         "student_count": student_count,
                         "email": self.user_data["email"]
-                    },
-                    timeout=30.0
+                    }
                 )
             
             if response.status_code == 200:
                 return True, response.json()
             else:
-                error = response.json()
-                return False, {"error": error.get("detail", "Payment initialization failed")}
+                try:
+                    error = response.json()
+                    return False, {"error": error.get("detail", "Payment initialization failed")}
+                except:
+                    return False, {"error": f"Failed (HTTP {response.status_code})"}
         
         except Exception as e:
             return False, {"error": f"Connection error: {str(e)}"}
@@ -262,11 +287,10 @@ class AuthService:
             return False, {"error": "Not authenticated"}
         
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.api_url}/license/verify/{reference}",
-                    headers={"Authorization": f"Bearer {self.token}"},
-                    timeout=30.0
+                    headers={"Authorization": f"Bearer {self.token}"}
                 )
             
             if response.status_code == 200:
@@ -279,8 +303,11 @@ class AuthService:
                 
                 return True, data
             else:
-                error = response.json()
-                return False, {"error": error.get("detail", "Verification failed")}
+                try:
+                    error = response.json()
+                    return False, {"error": error.get("detail", "Verification failed")}
+                except:
+                    return False, {"error": f"Failed (HTTP {response.status_code})"}
         
         except Exception as e:
             return False, {"error": f"Connection error: {str(e)}"}
@@ -291,12 +318,11 @@ class AuthService:
             return False, "Not authenticated"
         
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     f"{self.api_url}/license/check",
                     headers={"Authorization": f"Bearer {self.token}"},
-                    params={"device_fingerprint": self.device_fingerprint},
-                    timeout=30.0
+                    params={"device_fingerprint": self.device_fingerprint}
                 )
             
             if response.status_code == 200:
@@ -308,8 +334,11 @@ class AuthService:
                 else:
                     return False, "No valid license found"
             else:
-                error = response.json()
-                return False, error.get("detail", "Failed to update license")
+                try:
+                    error = response.json()
+                    return False, error.get("detail", "Failed to update license")
+                except:
+                    return False, f"Failed (HTTP {response.status_code})"
         
         except Exception as e:
             return False, f"Connection error: {str(e)}"
