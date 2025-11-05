@@ -1,6 +1,7 @@
 """
 Local Desktop App - Authentication Service
 Connects to hosted backend for auth and licensing
+UPDATED: Added last_updated tracking for intelligent sync
 """
 
 import httpx
@@ -14,7 +15,7 @@ from datetime import datetime
 from typing import Optional, Dict, Tuple
 import os
 
-# Configuration - FIX: Use environment variable with local fallback
+# Configuration
 API_BASE_URL = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
 LOCAL_CONFIG_PATH = Path.home() / ".photosorter" / "config.json"
 
@@ -26,10 +27,9 @@ class AuthService:
         self.token: Optional[str] = None
         self.user_data: Optional[Dict] = None
         self.license_data: Optional[Dict] = None
-        # Track email during multi-step auth (Signup -> Verify -> Login)
         self.pending_email: Optional[str] = None 
-        # CRITICAL SECURITY FIELD: Stores the one-way hash of the password for offline verification
         self.password_hash: Optional[str] = None 
+        self.last_updated: Optional[datetime] = None  # Track when data was last refreshed
         
         self.device_fingerprint = self.generate_device_fingerprint()
         
@@ -45,10 +45,7 @@ class AuthService:
         node = platform.node()
         processor = platform.processor()
         
-        # Combine system info
         device_string = f"{system}|{machine}|{node}|{processor}"
-        
-        # Hash for privacy and consistency
         fingerprint = hashlib.sha256(device_string.encode()).hexdigest()
         return fingerprint
 
@@ -58,10 +55,13 @@ class AuthService:
         fingerprint as a simple salt. This allows for offline comparison.
         """
         hasher = hashlib.sha256()
-        # Use a strong encoding and combine with a device-specific salt
         hasher.update(password.encode('utf-8'))
         hasher.update(self.device_fingerprint.encode('utf-8')) 
         return hasher.hexdigest()
+    
+    def get_last_updated(self) -> Optional[datetime]:
+        """Get the last time data was updated from server"""
+        return self.last_updated
     
     def save_session(self):
         """Save auth session locally to the configuration file"""
@@ -73,9 +73,9 @@ class AuthService:
                 "user": self.user_data,
                 "license": self.license_data,
                 "pending_email": self.pending_email, 
-                "password_hash": self.password_hash, # <-- SECURELY PERSIST HASH
+                "password_hash": self.password_hash,
                 "device_fingerprint": self.device_fingerprint,
-                "last_updated": datetime.utcnow().isoformat()
+                "last_updated": self.last_updated.isoformat() if self.last_updated else None
             }
             
             with open(LOCAL_CONFIG_PATH, "w") as f:
@@ -98,7 +98,15 @@ class AuthService:
             self.user_data = session_data.get("user")
             self.license_data = session_data.get("license")
             self.pending_email = session_data.get("pending_email")
-            self.password_hash = session_data.get("password_hash") # <-- LOAD HASH
+            self.password_hash = session_data.get("password_hash")
+            
+            # Load last_updated
+            last_updated_str = session_data.get("last_updated")
+            if last_updated_str:
+                try:
+                    self.last_updated = datetime.fromisoformat(last_updated_str)
+                except:
+                    self.last_updated = None
             
             # Verify device fingerprint matches
             saved_fp = session_data.get("device_fingerprint")
@@ -107,9 +115,11 @@ class AuthService:
                 self.clear_session()
             elif self.is_authenticated():
                  print("✅ Session loaded and user is authenticated.")
+                 days_since_update = (datetime.utcnow() - self.last_updated).days if self.last_updated else 999
+                 print(f"📅 Last updated: {days_since_update} days ago")
         except Exception as e:
             print(f"❌ Error loading session: {e}")
-            self.clear_session() # Clear corrupted session
+            self.clear_session()
     
     def clear_session(self):
         """Clear local session variables and delete the config file"""
@@ -117,7 +127,8 @@ class AuthService:
         self.user_data = None
         self.license_data = None
         self.pending_email = None 
-        self.password_hash = None # <-- Clear stored hash
+        self.password_hash = None
+        self.last_updated = None
         
         if LOCAL_CONFIG_PATH.exists():
             try:
@@ -176,11 +187,11 @@ class AuthService:
                 data = response.json()
                 
                 if data.get("access_token") and data.get("user"):
-                    # NOTE: Verification often requires a subsequent explicit login to get the password hash
                     self.token = data["access_token"]
                     self.user_data = data["user"]
                     self.license_data = data.get("license_status")
                     self.pending_email = None 
+                    self.last_updated = datetime.utcnow()
                     self.save_session()
                     return True, "Email verified and session logged in successfully! Please log in to save password locally."
                 
@@ -220,8 +231,9 @@ class AuthService:
                 self.user_data = data["user"]
                 self.license_data = data.get("license_status")
                 self.pending_email = None
+                self.last_updated = datetime.utcnow()
                 
-                # --- CRITICAL FIX: Save the local hash of the password for OFFLINE AUTH ---
+                # Save the local hash of the password for OFFLINE AUTH
                 self.password_hash = self.hash_password(password)
                 
                 # Save session upon successful login
@@ -236,9 +248,9 @@ class AuthService:
                     return False, f"Login failed (HTTP {response.status_code})"
         
         except httpx.ConnectError:
-            return False, f"Cannot connect to server at {self.api_url}. Is the backend running?"
+            return False, f"Cannot connect to server at {self.api_url}. Trying offline mode..."
         except httpx.TimeoutException:
-            return False, "Connection timeout. Please check your internet connection."
+            return False, "Connection timeout. Trying offline mode..."
         except Exception as e:
             return False, f"Connection error: {str(e)}"
 
@@ -249,22 +261,21 @@ class AuthService:
         """
         # 1. Check if the app has any saved session/credentials
         if not self.password_hash or not self.user_data or not self.token:
-            return False, "No full session data found. Please log in online first to establish the session."
+            return False, "No saved session found. Please log in online first."
         
         # 2. Verify email matches the stored user data
         if self.user_data.get("email", "").lower() != email.lower():
-            return False, "Local session mismatch: Email incorrect."
+            return False, "Email does not match saved session."
             
         # 3. Hash the provided password and compare it to the stored hash
         input_hash = self.hash_password(password)
         if input_hash != self.password_hash:
-            return False, "Incorrect password for local login."
+            return False, "Incorrect password."
 
         # 4. Success - The user is authenticated locally with valid credentials
-        print("✅ Local login successful. Session is active.")
-        return True, "Authenticated locally."
+        print("✅ Local login successful. Operating in offline mode.")
+        return True, "Authenticated locally (offline mode)"
     
-    # ... (resend_otp, logout, is_authenticated, has_valid_license, etc. methods remain the same)
     async def resend_otp(self, email: str) -> Tuple[bool, str]:
         """Resend OTP"""
         try:
@@ -323,12 +334,16 @@ class AuthService:
             
             if response.status_code == 200:
                 self.license_data = response.json()
+                self.last_updated = datetime.utcnow()
                 self.save_session()
                 return self.license_data
             else:
                 return {"valid": False, "message": "Failed to fetch license"}
         
         except Exception as e:
+            # Return cached data if available
+            if self.license_data:
+                return {**self.license_data, "cached": True, "message": "Using cached license data (offline)"}
             return {"valid": False, "message": f"Connection error: {str(e)}"}
     
     async def initialize_license_purchase(self, student_count: int) -> Tuple[bool, Dict]:
@@ -375,8 +390,8 @@ class AuthService:
                 data = response.json()
                 
                 if data.get("success"):
-                    # Update local license data
                     self.license_data = data.get("license")
+                    self.last_updated = datetime.utcnow()
                     self.save_session()
                 
                 return True, data
@@ -405,6 +420,7 @@ class AuthService:
             
             if response.status_code == 200:
                 self.license_data = response.json()
+                self.last_updated = datetime.utcnow()
                 self.save_session()
                 
                 if self.license_data.get("valid"):
@@ -424,45 +440,3 @@ class AuthService:
 
 # Global instance
 auth_service = AuthService()
-
-# --- Example Usage (Demonstrates how the service is intended to be called) ---
-
-async def main_app_flow():
-    """Simulated application startup and authentication flow."""
-    print("\n--- Starting Auth Service Demo ---")
-    
-    TEST_EMAIL = "test_user@example.com"
-    TEST_PASSWORD = "Password123"
-    
-    # 1. Check existing session
-    if auth_service.is_authenticated():
-        # Attempt to log in locally without network connection
-        print("\n--- Attempting Local Login (Offline) ---")
-        success, message = auth_service.local_login(TEST_EMAIL, TEST_PASSWORD)
-        print(f"Local Login Result: {success}, {message}")
-        
-        if success:
-            # If local login succeeds, perform an online check in the background
-            print("\n--- Performing License Check (Online) ---")
-            status, msg = await auth_service.update_license_from_server()
-            print(f"License Status: {msg}")
-        return
-
-    # If no session, proceed with initial online login
-    print("\n--- Initial Online Login Required ---")
-    success, message = await auth_service.login(TEST_EMAIL, TEST_PASSWORD)
-    print(f"Online Login Result: {success}, {message}")
-    
-    # 2. Final state check
-    print("\n--- Final Service Status ---")
-    if auth_service.is_authenticated():
-        print(f"Status: LOGGED IN. Email: {auth_service.user_data.get('email')}")
-        print(f"Password Hash Stored: {auth_service.password_hash is not None}")
-    else:
-        print("Status: NOT AUTHENTICATED.")
-    
-if __name__ == "__main__":
-    try:
-        asyncio.run(main_app_flow())
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")

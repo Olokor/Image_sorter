@@ -3,7 +3,7 @@ Photo App - Web-Based GUI Version with Authentication
 FastAPI + HTML/CSS/JS frontend
 """
 import sys
-import os
+import os, hashlib
 import webbrowser
 import threading
 import time
@@ -97,13 +97,23 @@ def generate_session_token():
     """Generate secure session token"""
     return secrets.token_urlsafe(32)
 
+def hash_password_local(password: str, salt: str = "") -> str:
+    """
+    Hash password for local storage (not sent to server)
+    Uses SHA-256 for consistency with auth_service
+    """
+    hasher = hashlib.sha256()
+    hasher.update(password.encode('utf-8'))
+    hasher.update(salt.encode('utf-8'))
+    return hasher.hexdigest()
+
 def get_current_photographer(session_token: Optional[str] = Cookie(None)):
     """Dependency to get current logged-in photographer"""
     if not session_token or session_token not in active_sessions:
+        print("No valid session token found.")
         return None
     
     photographer_id = active_sessions[session_token]['photographer_id']
-    # Use app_service.db_session which is globally available
     photographer = app_service.db_session.get(Photographer, photographer_id)
     
     if photographer and photographer.is_active:
@@ -115,15 +125,9 @@ def require_auth(session_token: Optional[str] = Cookie(None)):
     """Dependency to require authentication"""
     photographer = get_current_photographer(session_token)
     if not photographer:
-        # FIX: Redirect to login page if not authenticated for HTML routes
-        # This is a common pattern, but returning 401 for API routes is also fine.
-        # Given this is used on HTML routes, a redirect is user-friendly.
-        # However, it's also used on API routes.
-        # A 401 is more appropriate for a mixed dependency.
         raise HTTPException(status_code=401, detail="Not authenticated")
     return photographer
 
-# FIX: Moved require_license dependency here so it's defined before use
 def require_license(min_students: int = 0):
     """Dependency to check if user has valid license"""
     def check():
@@ -183,7 +187,6 @@ async def verify_email(request: VerifyEmailRequest):
         "message": message
     }
 
-# FIX: Changed signature to use Pydantic model for consistency
 @router.post("/resend-otp")
 async def resend_otp(request: ResendOTPRequest):
     """Resend OTP"""
@@ -194,14 +197,71 @@ async def resend_otp(request: ResendOTPRequest):
         "message": message
     }
 
-# FIX: Added @router.post decorator and Response object
 @router.post("/login")
 async def login(request: LoginRequest, response: Response):
-    """Login via hosted backend"""
-    success, message = await auth_service.login(
-        email=request.email,
-        password=request.password
-    )
+    """
+    Login via hosted backend OR local offline authentication
+    Priority: Try offline first, then online if needed
+    """
+    email = request.email
+    password = request.password
+    
+    # Step 1: Try LOCAL authentication first (offline)
+    if auth_service.is_authenticated() and auth_service.user_data.get('email', '').lower() == email.lower():
+        success, message = auth_service.local_login(email, password)
+        
+        if success:
+            # Local auth successful, check if we need to refresh from server
+            # Only refresh if last update was > 7 days ago
+            try:
+                last_updated = auth_service.get_last_updated()
+                days_since_update = (datetime.utcnow() - last_updated).days if last_updated else 999
+                
+                if days_since_update > 7:
+                    print("📡 Attempting background license refresh...")
+                    # Try to refresh, but don't fail if offline
+                    try:
+                        await auth_service.update_license_from_server()
+                    except:
+                        print("⚠️ Could not refresh license (offline mode)")
+            except:
+                pass
+            
+            # Get or create local photographer (already exists if previously logged in)
+            photographer = app_service.db_session.query(Photographer).filter_by(email=email).first()
+            
+            if photographer:
+                # Update last login
+                photographer.last_login = datetime.utcnow()
+                app_service.db_session.commit()
+                
+                # Create/update session cookie
+                session_token = generate_session_token()
+                active_sessions[session_token] = {
+                    'photographer_id': photographer.id,
+                    'created_at': datetime.utcnow(),
+                    'students_at_login': photographer.current_session_student_count or 0
+                }
+                
+                response.set_cookie(
+                    key="session_token",
+                    value=session_token,
+                    httponly=True,
+                    max_age=int(timedelta(days=30).total_seconds()),
+                    samesite="Lax",
+                    secure=False
+                )
+                
+                return {
+                    "success": True,
+                    "message": "Login successful (offline mode)",
+                    "user": auth_service.user_data,
+                    "license": auth_service.license_data,
+                    "offline_mode": True
+                }
+    
+    # Step 2: ONLINE authentication (backend)
+    success, message = await auth_service.login(email=email, password=password)
     
     if not success:
         return {
@@ -209,61 +269,69 @@ async def login(request: LoginRequest, response: Response):
             "message": message
         }
     
-    # Check license before allowing login
-    
-        
-    # --- FIX: LOGIC TO BRIDGE AUTH_SERVICE AND LOCAL COOKIE SESSION ---
+    # Online login successful
     user_data = auth_service.user_data
     if not user_data:
-         return {
+        return {
             "success": False,
             "message": "Login successful but no user data returned."
         }
 
     # Get or create local photographer
     photographer = app_service.db_session.query(Photographer).filter_by(email=user_data['email']).first()
+    
     if not photographer:
+        # FIX: Hash the password locally before storing
+        password_hash = hash_password_local(password, email)
+        
         photographer = Photographer(
             name=user_data['name'],
             email=user_data['email'],
             phone=user_data.get('phone'),
-            is_active=True 
+            password_hash=password_hash,  # Store local hash
+            is_active=True,
+            last_login=datetime.utcnow(),
+            current_session_student_count=0,
+            total_students_registered=0
         )
         app_service.db_session.add(photographer)
         app_service.db_session.commit()
         app_service.db_session.refresh(photographer)
-    elif not photographer.is_active:
-        photographer.is_active = True # Re-activate on login
+    else:
+        # Update existing photographer
+        password_hash = hash_password_local(password, email)
+        photographer.password_hash = password_hash
+        photographer.is_active = True
+        photographer.last_login = datetime.utcnow()
         app_service.db_session.commit()
     
     # Create local session
     session_token = generate_session_token()
     active_sessions[session_token] = {
         'photographer_id': photographer.id,
-        'created_at': datetime.utcnow()
+        'created_at': datetime.utcnow(),
+        'students_at_login': photographer.current_session_student_count or 0
     }
 
-    # Set the cookie on the response
     response.set_cookie(
         key="session_token",
         value=session_token,
         httponly=True,
-        max_age=int(timedelta(days=7).total_seconds()), # 7-day session
+        max_age=int(timedelta(days=30).total_seconds()),
         samesite="Lax",
-        secure=False # Set to True in production with HTTPS
+        secure=False
     )
-    # --- END FIX ---
 
     return {
         "success": True,
         "message": "Login successful",
         "user": auth_service.user_data,
-        "license": auth_service.license_data
+        "license": auth_service.license_data,
+        "offline_mode": False
     }
 
-# FIX: Added Response object to delete cookie
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(response: Response, session_token: Optional[str] = Cookie(None)):
     """Logout user"""
     # Clear auth_service state
     auth_service.logout()
@@ -271,9 +339,9 @@ async def logout(response: Response):
     # Clear local session cookie
     response.delete_cookie(key="session_token")
     
-    # TODO: Should also clear the session from `active_sessions` dict
-    # This requires getting the token from the request cookie first.
-    # Simple logout:
+    # Remove from active sessions
+    if session_token and session_token in active_sessions:
+        del active_sessions[session_token]
     
     return {
         "success": True,
@@ -292,7 +360,6 @@ async def get_current_user_from_auth_service():
         "license": auth_service.license_data
     }
 
-# FIX: This route is for the *local* cookie-based session
 @app.get("/api/auth/me")
 async def get_current_user_from_cookie(photographer: Photographer = Depends(get_current_photographer)):
     """Get current photographer info from session cookie"""
@@ -305,11 +372,12 @@ async def get_current_user_from_cookie(photographer: Photographer = Depends(get_
             "id": photographer.id,
             "name": photographer.name,
             "email": photographer.email,
-            "phone": photographer.phone
+            "phone": photographer.phone,
+            "current_session_students": photographer.current_session_student_count or 0,
+            "total_students": photographer.total_students_registered or 0
         }
     }
 
-# FIX: Include the auth router
 app.include_router(router)
 
 
@@ -327,7 +395,7 @@ async def dashboard(request: Request, photographer: Photographer = Depends(requi
         "session": session,
         "stats": stats,
         "sessions": sessions,
-        "photographer": photographer # Pass photographer to template
+        "photographer": photographer
     })
 
 
@@ -350,17 +418,14 @@ async def get_sessions(photographer: Photographer = Depends(require_auth)):
 async def create_session(
     name: str = Form(...),
     location: str = Form(""),
-    # FIX: Corrected dependency name
-    _license_check: bool = Depends(require_license()) 
+    _license_check: bool = Depends(require_license())
 ):
-    # Check if license is valid (redundant, but good defense)
     if not auth_service.has_valid_license():
         raise HTTPException(
             status_code=403,
             detail="You need an active license to create a new session. Please purchase a license."
         )
     
-    # Rest of your existing code...
     session = app_service.create_session(name, location)
     return {
         "success": True,
@@ -369,7 +434,6 @@ async def create_session(
     }
 
 
-# FIX: Removed stray """
 @app.post("/api/sessions/{session_id}/activate")
 async def activate_session(session_id: int, photographer: Photographer = Depends(require_auth)):
     """Set active session"""
@@ -398,7 +462,8 @@ async def enroll_student(
     email: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
     photos: List[UploadFile] = File(...),
-    _license_check: bool = Depends(require_license()) # Dependency already checks
+    photographer: Photographer = Depends(require_auth),
+    _license_check: bool = Depends(require_license())
 ):
     session = app_service.get_active_session()
     if not session:
@@ -414,7 +479,6 @@ async def enroll_student(
             detail=f"Student limit reached. You purchased license for {available_students} students. Please purchase more to enroll additional students."
         )
     
-    # --- FIX: ADDED MISSING FUNCTION LOGIC ---
     try:
         # Save upload files temporarily
         photo_paths = []
@@ -422,7 +486,6 @@ async def enroll_student(
             raise HTTPException(400, "At least one reference photo is required.")
 
         for photo in photos:
-            # Use a secure, unique filename
             ext = Path(photo.filename).suffix if photo.filename else ".jpg"
             save_name = f"ref_{secrets.token_hex(8)}_{int(datetime.utcnow().timestamp())}{ext}"
             file_path = UPLOAD_DIR / save_name
@@ -431,15 +494,20 @@ async def enroll_student(
                 f.write(await photo.read())
             photo_paths.append(str(file_path))
         
-        # Call the service layer
-        student = app_service.enroll_student(
-            session_id=session.id,
+        # Call the service layer (use the multiple photos method)
+        student = app_service.enroll_student_multiple_photos(
             state_code=state_code,
             full_name=full_name,
+            reference_photo_paths=photo_paths,
             email=email,
             phone=phone,
-            reference_photo_paths=photo_paths
+            match_existing_photos=True
         )
+        
+        # Update photographer's student count tracking
+        photographer.current_session_student_count = (photographer.current_session_student_count or 0) + 1
+        photographer.total_students_registered = (photographer.total_students_registered or 0) + 1
+        app_service.db_session.commit()
         
         return {
             "success": True,
@@ -447,10 +515,11 @@ async def enroll_student(
             "student_id": student.id
         }
     except Exception as e:
-        # TODO: Clean up saved photos on error
         print(f"Enrollment error: {e}")
+        # Rollback on error
+        app_service.db_session.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred during enrollment: {str(e)}")
-    # --- END FIX ---
+
 
 @app.get("/api/students")
 async def get_students(photographer: Photographer = Depends(require_auth)):

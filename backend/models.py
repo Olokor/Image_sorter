@@ -1,6 +1,7 @@
 """
 SQLAlchemy models for NYSC Camp Photo Sorting DB
 With Authentication and Download Request features
+UPDATED: Added session tracking fields for photographers
 """
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, LargeBinary, Text
@@ -16,21 +17,26 @@ class Photographer(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
-    password_hash = Column(String(256), nullable=False)
+    password_hash = Column(String(256), nullable=False)  # Local password hash for offline auth
     phone = Column(String(20))
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
     is_active = Column(Boolean, default=True)
     license_valid_until = Column(DateTime)
     
+    # Session tracking fields
+    current_session_student_count = Column(Integer, default=0)  # Students added in current auth session
+    total_students_registered = Column(Integer, default=0)  # Total students ever registered
+    last_backend_sync = Column(DateTime)  # Last time we synced with backend
+    
     sessions = relationship('CampSession', back_populates='photographer', lazy='select')
     
     def set_password(self, password):
-        """Hash and set password"""
+        """Hash and set password (for local storage)"""
         self.password_hash = hashlib.sha256(password.encode()).hexdigest()
     
     def check_password(self, password):
-        """Verify password"""
+        """Verify password (for local auth)"""
         return self.password_hash == hashlib.sha256(password.encode()).hexdigest()
     
     def __repr__(self):
@@ -78,7 +84,7 @@ class Student(Base):
     registered_at = Column(DateTime, default=datetime.utcnow)
     
     # Download tracking
-    total_downloads = Column(Integer, default=0)  # Total downloads across all sessions
+    total_downloads = Column(Integer, default=0)
     
     session = relationship('CampSession', back_populates='students', lazy='select')
     faces = relationship('Face', back_populates='student', lazy='select', cascade='all, delete-orphan')

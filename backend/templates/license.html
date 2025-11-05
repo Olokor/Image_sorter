@@ -312,7 +312,7 @@ async function initializePayment() {
     document.getElementById('paymentModal').classList.add('active');
     
     try {
-        const response = await fetch('/api/license/purchase/initialize', {
+        const response = await fetch('127.0.0.1/license/purchase/initialize', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
