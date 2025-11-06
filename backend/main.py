@@ -361,7 +361,7 @@ async def view_session(session_id: int, photographer: Photographer = Depends(req
     if not session:
         raise HTTPException(404, "Session not found")
     
-    stats = app_service.get_session_stats(session_id)
+    stats = app_service.get_session_stats()
     
     return {
         "success": True,

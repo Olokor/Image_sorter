@@ -480,22 +480,25 @@
         }
         
         async function resendOTP() {
-            try {
-                const response = await fetch(`/api/auth/resend-otp?email=${encodeURIComponent(pendingEmail)}`, {
-                    method: 'POST'
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    showAlert('New code sent to your email', 'success');
-                } else {
-                    showAlert(data.message || 'Failed to resend code', 'error');
-                }
-            } catch (error) {
-                showAlert('Connection error. Please try again.', 'error');
-            }
+    try {
+        const response = await fetch('/api/auth/resend-otp', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ email: pendingEmail })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            showAlert('New code sent to your email', 'success');
+        } else {
+            showAlert(data.message || 'Failed to resend code', 'error');
         }
+    } catch (error) {
+        showAlert('Connection error. Please try again.', 'error');
+    }
+}
+
         
         function cancelOTP() {
             document.querySelectorAll('.form-section').forEach(s => s.classList.remove('active'));
