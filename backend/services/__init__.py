@@ -5,7 +5,7 @@
 
 from .app_service import EnhancedAppService
 from .local_server import LocalServer
-from .auth_service import AuthService
+from .auth_service import SecureAuthService
 from .license_manager import LicenseManager
 
-__all__ = ['AppService', 'LocalServer', 'AuthService', 'LicenseManager']
+__all__ = ['AppService', 'LocalServer', 'SecureAuthService', 'LicenseManager']
