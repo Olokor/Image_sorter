@@ -353,6 +353,75 @@ async def get_current_user_from_auth_service():
 app.include_router(router)
 
 
+@app.get("/api/sessions/{session_id}/view")
+async def view_session(session_id: int, photographer: Photographer = Depends(require_auth)):
+    """Set which session to VIEW (doesn't change active session)"""
+    session = app_service.set_viewing_session(session_id)
+    
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    stats = app_service.get_session_stats(session_id)
+    
+    return {
+        "success": True,
+        "session": {
+            "id": session.id,
+            "name": session.name,
+            "location": session.location,
+            "is_active": session.is_active,
+            "is_viewing": True
+        },
+        "stats": stats
+    }
+
+
+@app.get("/api/sessions/{session_id}/stats")
+async def get_session_stats(session_id: int, photographer: Photographer = Depends(require_auth)):
+    """Get statistics for a specific session"""
+    stats = app_service.get_session_stats(session_id)
+    
+    if not stats:
+        raise HTTPException(404, "Session not found")
+    
+    return stats
+
+
+@app.get("/api/students")
+async def get_students(
+    session_id: Optional[int] = None,
+    photographer: Photographer = Depends(require_auth)
+):
+    """Get students - optionally from specific session"""
+    if session_id:
+        session = app_service.db_session.query(CampSession).get(session_id)
+        if not session:
+            raise HTTPException(404, "Session not found")
+    else:
+        session = app_service.get_viewing_session()
+    
+    students = app_service.get_students(session)
+    
+    result = []
+    for s in students:
+        photos = app_service.get_student_photos(s)
+        ref_photo_count = len(s.reference_photo_path.split(',')) if s.reference_photo_path else 0
+        
+        result.append({
+            "id": s.id,
+            "state_code": s.state_code,
+            "full_name": s.full_name,
+            "email": s.email,
+            "phone": s.phone,
+            "registered_at": s.registered_at.isoformat(),
+            "photo_count": len(photos),
+            "reference_photo_count": ref_photo_count,
+            "total_downloads": s.total_downloads or 0,
+            "session_id": s.session_id  # Include session info
+        })
+    
+    return result
+
 # ==================== LICENSE ROUTES WITH JWT ====================
 
 license_router = APIRouter(prefix="/api/license", tags=["License"])
@@ -748,6 +817,13 @@ async def get_students(photographer: Photographer = Depends(require_auth)):
 @app.delete("/api/students/{student_id}")
 async def delete_student(student_id: int, photographer: Photographer = Depends(require_auth)):
     """Delete a student"""
+    student = app_service.db_session.get(Student, student_id)
+    if student.total_downloads > 0:
+        raise HTTPException(
+            403,
+            "Cannot delete student who has downloaded photos. "
+            "This counts toward your license usage."
+        )
     success = app_service.delete_student(student_id)
     if success:
         return {"success": True, "message": "Student deleted"}

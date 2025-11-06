@@ -27,9 +27,72 @@ class EnhancedAppService:
         self.face_service = FaceService()
         self.current_photographer = None
         self.current_session = None
+        self.current_session = None  # For operations (enroll, import)
+        self.viewing_session = None 
         
         self._init_photographer()
     
+
+    def set_viewing_session(self, session_id: int):
+        """Set which session to VIEW (doesn't affect operations)"""
+        session = self.db_session.query(CampSession).get(session_id)
+        if session:
+            self.viewing_session = session
+            return session
+        return None
+    
+    def get_viewing_session(self) -> Optional[CampSession]:
+        """Get session currently being viewed"""
+        if self.viewing_session:
+            return self.viewing_session
+        # Default to active session if no viewing session set
+        return self.get_active_session()
+    
+    def get_students(self, session: CampSession = None) -> List[Student]:
+        """Get students - now accepts optional session parameter"""
+        if session is None:
+            session = self.get_viewing_session()  # Changed!
+        
+        if not session:
+            return []
+        
+        return self.db_session.query(Student).filter(
+            Student.session_id == session.id
+        ).all()
+    
+    def get_session_stats(self, session_id: int = None) -> Dict:
+        """Get stats for specific session or viewing session"""
+        if session_id:
+            session = self.db_session.query(CampSession).get(session_id)
+        else:
+            session = self.get_viewing_session()
+        
+        if not session:
+            return {}
+        
+        result = self.db_session.execute(text(
+            """SELECT 
+                (SELECT COUNT(*) FROM students WHERE session_id = :sid) as students,
+                (SELECT COUNT(*) FROM photos WHERE session_id = :sid) as photos,
+                (SELECT COALESCE(SUM(face_count), 0) FROM photos WHERE session_id = :sid) as total_faces,
+                (SELECT COUNT(*) FROM faces f JOIN photos p ON f.photo_id = p.id 
+                 WHERE p.session_id = :sid AND f.student_id IS NOT NULL) as matched,
+                (SELECT COUNT(*) FROM faces f JOIN photos p ON f.photo_id = p.id 
+                 WHERE p.session_id = :sid AND f.needs_review = 1) as review"""
+        ), {"sid": session.id})
+        
+        row = result.fetchone()
+        
+        return {
+            'session_id': session.id,
+            'session_name': session.name,
+            'is_active': session.is_active,
+            'students': row[0],
+            'photos': row[1],
+            'total_faces': row[2],
+            'matched_faces': row[3],
+            'needs_review': row[4]
+        }
     def _init_photographer(self):
         """Initialize or get photographer"""
         photographer = self.db_session.query(Photographer).first()
