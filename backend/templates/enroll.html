@@ -264,51 +264,40 @@ if (document.getElementById('studentsTable')) {
     }
     
     async function enrollStudent(event) {
-        event.preventDefault();
+    event.preventDefault();
+    
+    // CHECK LICENSE FIRST
+    try {
+        const licenseCheck = await fetch('/api/license/status');
+        const licenseData = await licenseCheck.json();
         
-        if (selectedPhotos.length === 0) {
-            showMessage('Please select at least one reference photo', 'error');
+        if (!licenseData.valid) {
+            showAlert('❌ No valid license! Please purchase a license in the License page.', 'error');
+            setTimeout(() => {
+                window.location.href = '/license';
+            }, 2000);
             return;
         }
         
-        const form = event.target;
-        const formData = new FormData(form);
-        
-        // Remove old file input and add selected photos
-        formData.delete('photos');
-        selectedPhotos.forEach(photo => {
-            formData.append('photos', photo);
-        });
-        
-        const btn = document.getElementById('enrollBtn');
-        btn.disabled = true;
-        btn.textContent = '⏳ Enrolling...';
-        
-        try {
-            const response = await fetch('/api/enroll', {
-                method: 'POST',
-                body: formData
-            });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-                showMessage(data.message, 'success');
-                form.reset();
-                selectedPhotos = [];
-                document.getElementById('photoPreview').innerHTML = '';
-                updatePhotoCount();
-                setTimeout(() => window.location.reload(), 1500);
-            } else {
-                showMessage(data.message, 'error');
-            }
-        } catch (error) {
-            showMessage('Failed to enroll student: ' + error.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.textContent = '✓ Enroll Student';
+        if (licenseData.students_available <= 0) {
+            showAlert('❌ You have 0 students available. Please purchase more in the License page.', 'error');
+            setTimeout(() => {
+                window.location.href = '/license';
+            }, 2000);
+            return;
         }
+    } catch (error) {
+        showAlert('⚠️ Could not verify license status. Please check your connection.', 'error');
+        return;
     }
+    
+    if (selectedPhotos.length === 0) {
+        showMessage('Please select at least one reference photo', 'error');
+        return;
+    }
+}
+    
+    // ... rest of the function
     
     async function deleteStudent(studentId, studentName) {
         if (!confirm(`Delete ${studentName}? This will remove all their data and face matches.`)) {

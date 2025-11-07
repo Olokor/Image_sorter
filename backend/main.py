@@ -734,6 +734,19 @@ async def enroll_student(
     # Check student limit
     available_students = auth_service.get_students_available()
     current_student_count = session.student_count
+
+    if not auth_service.has_valid_license():
+        raise HTTPException(
+            status_code=403,
+            detail="No valid license found. Please purchase a license to enroll students."
+        )
+    
+    if auth_service.get_students_available() <= 0:
+        raise HTTPException(
+            status_code=403,
+            detail="Your license has 0 students available. Please purchase more students to continue."
+        )
+    
     
     if current_student_count >= available_students:
         raise HTTPException(

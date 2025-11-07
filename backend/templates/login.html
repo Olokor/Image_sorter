@@ -436,7 +436,7 @@
             const formData = new FormData(event.target);
             
             try {
-                const response = await fetch('/api/auth/login', {
+                const response = await fetch('http://127.0.0.1:8001/auth/login', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -480,7 +480,7 @@
             btn.textContent = 'Creating account...';
             
             try {
-                const response = await fetch('/api/auth/signup', {
+                const response = await fetch('auth/signup', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -533,7 +533,7 @@
             btn.textContent = 'Verifying...';
             
             try {
-                const response = await fetch('/api/auth/verify-email', {
+                const response = await fetch('/auth/verify-email', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -565,7 +565,7 @@
         
         async function resendOTP() {
             try {
-                const response = await fetch('/api/auth/resend-otp', {
+                const response = await fetch('/auth/resend-otp', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({email: pendingEmail})
@@ -598,13 +598,14 @@
             
             const formData = new FormData(event.target);
             resetEmail = formData.get('email');
+            console.log(resetEmail);
             
             const btn = document.getElementById('forgotBtn');
             btn.disabled = true;
             btn.textContent = 'Sending code...';
             
             try {
-                const response = await fetch('/api/auth/forgot-password', {
+                const response = await fetch('http://localhost:8001/auth/forgot-password', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: new URLSearchParams({email: resetEmail})
@@ -647,7 +648,7 @@
             btn.textContent = 'Verifying...';
             
             try {
-                const response = await fetch('/api/auth/verify-reset-otp', {
+                const response = await fetch('auth/verify-reset-otp', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: new URLSearchParams({
@@ -694,7 +695,7 @@
             btn.textContent = 'Resetting...';
             
             try {
-                const response = await fetch('/api/auth/reset-password', {
+                const response = await fetch('auth/reset-password', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: new URLSearchParams({

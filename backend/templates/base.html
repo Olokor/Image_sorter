@@ -330,6 +330,9 @@
                 <span>💳</span> License
             </a>
         </nav>
+        <a href="#" class="nav-item" onclick="handleLogout(event)">
+    <span>🚪</span> Logout
+</a>
         
         {% if session %}
         <div class="session-info">
@@ -366,6 +369,26 @@
             
             setTimeout(() => alertDiv.remove(), 5000);
         }
+        async function handleLogout(event) {
+    event.preventDefault();
+    
+    if (!confirm('Are you sure you want to logout?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/auth/logout', {
+            method: 'POST'
+        });
+        
+        if (response.ok) {
+            window.location.href = '/login';
+        }
+    } catch (error) {
+        console.error('Logout error:', error);
+        window.location.href = '/login';
+    }
+}
     </script>
     
     {% block extra_js %}{% endblock %}
