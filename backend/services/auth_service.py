@@ -400,6 +400,109 @@ class SecureAuthService:
         self.clear_session()
         print("👤 Logged out")
     
+    async def logout_remote(self) -> Tuple[bool, str]:
+        """Logout from remote server (optional, notifies server)"""
+        if not self.token:
+            self.logout()
+            return True, "Logged out locally"
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.api_url}/auth/logout",
+                    headers=self.get_auth_headers()
+                )
+            
+            if response.status_code == 200:
+                self.logout()
+                return True, "Logged out successfully"
+            else:
+                self.logout()
+                return True, "Logged out locally"
+        
+        except Exception as e:
+            self.logout()
+            return True, "Logged out locally"
+    
+    async def forgot_password(self, email: str) -> Tuple[bool, str]:
+        """Request password reset OTP"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                formData = {"email": email}
+                
+                response = await client.post(
+                    f"{self.api_url}/auth/forgot-password",
+                    headers=self.get_auth_headers(),
+                    data=formData
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return True, data.get("message", "Password reset code sent")
+            else:
+                error = response.json()
+                return False, error.get("detail", "Failed to send reset code")
+        
+        except httpx.ConnectError:
+            return False, "Cannot connect to server"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+    
+    async def verify_reset_otp(self, email: str, otp_code: str) -> Tuple[bool, str, Optional[str]]:
+        """
+        Verify password reset OTP
+        Returns: (success, message, reset_token)
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                formData = {
+                    "email": email,
+                    "otp_code": otp_code
+                }
+                
+                response = await client.post(
+                    f"{self.api_url}/auth/verify-reset-otp",
+                    headers=self.get_auth_headers(),
+                    data=formData
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                reset_token = data.get("reset_token")
+                return True, data.get("message", "OTP verified"), reset_token
+            else:
+                error = response.json()
+                return False, error.get("detail", "Invalid OTP"), None
+        
+        except Exception as e:
+            return False, f"Error: {str(e)}", None
+    
+    async def reset_password(self, reset_token: str, new_password: str) -> Tuple[bool, str]:
+        """Reset password with verified token"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                formData = {
+                    "reset_token": reset_token,
+                    "new_password": new_password
+                }
+                
+                response = await client.post(
+                    f"{self.api_url}/auth/reset-password",
+                    headers=self.get_auth_headers(),
+                    data=formData
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return True, data.get("message", "Password reset successful")
+            else:
+                error = response.json()
+                return False, error.get("detail", "Password reset failed")
+        
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    
     def is_authenticated(self) -> bool:
         """Check if authenticated"""
         return self.token is not None and self.user_data is not None
