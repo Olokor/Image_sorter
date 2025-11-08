@@ -424,30 +424,35 @@ class SecureAuthService:
             self.logout()
             return True, "Logged out locally"
     
+    
+
     async def forgot_password(self, email: str) -> Tuple[bool, str]:
         """Request password reset OTP"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                formData = {"email": email}
+                body = json.dumps({
+                    "email": email
+                })
                 
                 response = await client.post(
                     f"{self.api_url}/auth/forgot-password",
-                    headers=self.get_auth_headers(),
-                    data=formData
+                    headers=self.get_auth_headers(include_signature=True, body=body),
+                    content=body
                 )
             
             if response.status_code == 200:
                 data = response.json()
-                return True, data.get("message", "Password reset code sent")
+                return True, data.get("message", "Password reset code sent to your email")
             else:
                 error = response.json()
-                return False, error.get("detail", "Failed to send reset code")
+                return False, error.get("detail", f"Failed to send reset code ({response.status_code})")
         
         except httpx.ConnectError:
-            return False, "Cannot connect to server"
+            return False, "Cannot connect to server. Is it running?"
         except Exception as e:
-            return False, f"Error: {str(e)}"
-    
+            return False, f"Connection error: {str(e)}"
+
+
     async def verify_reset_otp(self, email: str, otp_code: str) -> Tuple[bool, str, Optional[str]]:
         """
         Verify password reset OTP
@@ -455,41 +460,44 @@ class SecureAuthService:
         """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                formData = {
+                body = json.dumps({
                     "email": email,
                     "otp_code": otp_code
-                }
+                })
                 
                 response = await client.post(
                     f"{self.api_url}/auth/verify-reset-otp",
-                    headers=self.get_auth_headers(),
-                    data=formData
+                    headers=self.get_auth_headers(include_signature=True, body=body),
+                    content=body
                 )
             
             if response.status_code == 200:
                 data = response.json()
                 reset_token = data.get("reset_token")
-                return True, data.get("message", "OTP verified"), reset_token
+                return True, data.get("message", "OTP verified successfully"), reset_token
             else:
                 error = response.json()
-                return False, error.get("detail", "Invalid OTP"), None
+                return False, error.get("detail", f"Verification failed ({response.status_code})"), None
         
+        except httpx.ConnectError:
+            return False, "Cannot connect to server. Is it running?", None
         except Exception as e:
-            return False, f"Error: {str(e)}", None
-    
+            return False, f"Connection error: {str(e)}", None
+
+
     async def reset_password(self, reset_token: str, new_password: str) -> Tuple[bool, str]:
         """Reset password with verified token"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                formData = {
+                body = json.dumps({
                     "reset_token": reset_token,
                     "new_password": new_password
-                }
+                })
                 
                 response = await client.post(
                     f"{self.api_url}/auth/reset-password",
-                    headers=self.get_auth_headers(),
-                    data=formData
+                    headers=self.get_auth_headers(include_signature=True, body=body),
+                    content=body
                 )
             
             if response.status_code == 200:
@@ -497,12 +505,13 @@ class SecureAuthService:
                 return True, data.get("message", "Password reset successful")
             else:
                 error = response.json()
-                return False, error.get("detail", "Password reset failed")
+                return False, error.get("detail", f"Password reset failed ({response.status_code})")
         
+        except httpx.ConnectError:
+            return False, "Cannot connect to server. Is it running?"
         except Exception as e:
-            return False, f"Error: {str(e)}"
-
-    
+            return False, f"Connection error: {str(e)}"
+        
     def is_authenticated(self) -> bool:
         """Check if authenticated"""
         return self.token is not None and self.user_data is not None

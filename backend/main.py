@@ -350,6 +350,41 @@ async def get_current_user_from_auth_service():
         "has_jwt": bool(auth_service.token)
     }
 
+
+@router.post("/forgot-password")
+async def forgot_password(email: str = Form(...)):
+    """Request password reset OTP via hosted backend"""
+    success, message = await auth_service.forgot_password(email)
+    
+    return {
+        "success": success,
+        "message": message
+    }
+
+
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(email: str = Form(...), otp_code: str = Form(...)):
+    """Verify password reset OTP"""
+    success, message, reset_token = await auth_service.verify_reset_otp(email, otp_code)
+    
+    return {
+        "success": success,
+        "message": message,
+        "reset_token": reset_token
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(reset_token: str = Form(...), new_password: str = Form(...)):
+    """Reset password with verified token"""
+    success, message = await auth_service.reset_password(reset_token, new_password)
+    
+    return {
+        "success": success,
+        "message": message
+    }
+
+
 app.include_router(router)
 
 
