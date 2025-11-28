@@ -272,7 +272,7 @@ if (document.getElementById('studentsTable')) {
         const licenseData = await licenseCheck.json();
         
         if (!licenseData.valid) {
-            showAlert('❌ No valid license! Please purchase a license in the License page.', 'error');
+            showMessage('❌ No valid license! Please purchase a license in the License page.', 'error');
             setTimeout(() => {
                 window.location.href = '/license';
             }, 2000);
@@ -280,20 +280,64 @@ if (document.getElementById('studentsTable')) {
         }
         
         if (licenseData.students_available <= 0) {
-            showAlert('❌ You have 0 students available. Please purchase more in the License page.', 'error');
+            showMessage('❌ You have 0 students available. Please purchase more in the License page.', 'error');
             setTimeout(() => {
                 window.location.href = '/license';
             }, 2000);
             return;
         }
     } catch (error) {
-        showAlert('⚠️ Could not verify license status. Please check your connection.', 'error');
+        showMessage('⚠️ Could not verify license status. Please check your connection.', 'error');
         return;
     }
     
     if (selectedPhotos.length === 0) {
         showMessage('Please select at least one reference photo', 'error');
         return;
+    }
+    
+    // Proceed with enrollment
+    const formData = new FormData(event.target);
+    
+    // Add selected photos
+    selectedPhotos.forEach(photo => {
+        formData.append('photos', photo);
+    });
+    
+    const btn = document.getElementById('enrollBtn');
+    btn.disabled = true;
+    btn.textContent = ' Enrolling...';
+    
+    try {
+        const response = await fetch('/api/enroll', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage(' ' + data.message, 'success');
+            
+            // Clear form
+            event.target.reset();
+            selectedPhotos = [];
+            document.getElementById('photoPreview').innerHTML = '';
+            updatePhotoCount();
+            
+            // Reload page after 2 seconds
+            setTimeout(() => {
+                window.location.reload();
+            }, 2000);
+        } else {
+            showMessage(' ' + (data.detail || data.message || 'Enrollment failed'), 'error');
+        }
+    } catch (error) {
+        console.error('Enrollment error:', error);
+        showMessage(' Failed to enroll student: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = ' Enroll Student';
     }
 }
     

@@ -215,3 +215,7 @@ backend/uploads
 backend/processed_photos
 backend/public_key_backup.pem
 backend/public_key.pem
+
+backend/build.py
+backend/launcher.py
+backend/pywebview_launcher.py

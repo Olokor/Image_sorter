@@ -11,6 +11,20 @@
         border-radius: 16px;
         text-align: center;
         margin-bottom: 30px;
+        position: relative;
+    }
+    
+    .pricing-card .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 16px;
     }
     
     .pricing-card h2 {
@@ -21,6 +35,15 @@
     .pricing-card p {
         font-size: 18px;
         opacity: 0.9;
+    }
+    
+    .pricing-note {
+        background: #E8F4FD;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 15px;
+        color: #2980B9;
+        font-size: 14px;
     }
     
     .feature-list {
@@ -159,6 +182,21 @@
         width: 90%;
         text-align: center;
     }
+    
+    .spinner {
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #3498DB;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 20px;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
 </style>
 <script src="https://js.paystack.co/v2/inline.js"></script>
 {% endblock %}
@@ -211,9 +249,15 @@
 </div>
 
 <!-- Pricing -->
-<div class="pricing-card">
-    <h2>₦200</h2>
+<div class="pricing-card" id="pricingCard">
+    <div class="loading-overlay" id="pricingLoader">
+        <div class="spinner"></div>
+    </div>
+    <h2 id="priceDisplay">₦---</h2>
     <p>Per Student • 30 Days Validity</p>
+    <div class="pricing-note" id="pricingNote" style="display: none;">
+        💡 Pricing loaded from server
+    </div>
 </div>
 
 <!-- Features -->
@@ -248,13 +292,13 @@
     
     <div class="amount-display">
         <div style="color: #7F8C8D; margin-bottom: 5px;">Total Amount</div>
-        <div class="amount" id="totalAmount">₦2,000</div>
+        <div class="amount" id="totalAmount">₦---</div>
         <div style="color: #7F8C8D; font-size: 14px; margin-top: 5px;">
             Valid for 30 days
         </div>
     </div>
     
-    <button class="btn btn-success" style="width: 100%; height: 60px; font-size: 18px; margin-top: 30px;" onclick="initializePayment()">
+    <button class="btn btn-success" style="width: 100%; height: 60px; font-size: 18px; margin-top: 30px;" onclick="initializePayment()" id="purchaseBtn" disabled>
         🛒 Proceed to Payment
     </button>
 </div>
@@ -285,12 +329,66 @@
 
 {% block extra_js %}
 <script>
-// JavaScript for license.html
+// JavaScript for license.html with dynamic pricing
 let studentCount = 10;
-const pricePerStudent = 200;
+let pricePerStudent = null; // Will be loaded from server
 let currentPaymentReference = null;
 
+// Load pricing from server on page load
+async function loadPricingFromServer() {
+    console.log('🔄 Loading pricing from server...');
+    
+    try {
+        // Use the existing auth_service JWT token
+        const response = await fetch('/api/license/pricing');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.price_per_student) {
+            pricePerStudent = data.price_per_student;
+            
+            // Update display
+            document.getElementById('priceDisplay').textContent = `₦${pricePerStudent.toLocaleString()}`;
+            document.getElementById('pricingNote').style.display = 'block';
+            document.getElementById('pricingLoader').style.display = 'none';
+            document.getElementById('purchaseBtn').disabled = false;
+            
+            // Update amount display
+            updateDisplay();
+            
+            console.log(`✓ Pricing loaded: ₦${pricePerStudent} per student`);
+        } else {
+            throw new Error('Invalid pricing data');
+        }
+        
+    } catch (error) {
+        console.error('❌ Failed to load pricing:', error);
+        
+        // Fallback to default (should rarely happen)
+        pricePerStudent = 200;
+        document.getElementById('priceDisplay').textContent = `₦${pricePerStudent} (Default)`;
+        document.getElementById('pricingLoader').style.display = 'none';
+        document.getElementById('purchaseBtn').disabled = false;
+        updateDisplay();
+        
+        // Show warning
+        const pricingCard = document.getElementById('pricingCard');
+        const warning = document.createElement('div');
+        warning.className = 'pricing-note';
+        warning.style.background = '#FADBD8';
+        warning.style.color = '#C0392B';
+        warning.textContent = '⚠️ Could not load current pricing. Using default.';
+        pricingCard.appendChild(warning);
+    }
+}
+
 function updateDisplay() {
+    if (pricePerStudent === null) return;
+    
     document.getElementById('studentCount').textContent = studentCount;
     const total = studentCount * pricePerStudent;
     document.getElementById('totalAmount').textContent = `₦${total.toLocaleString()}`;
@@ -309,6 +407,11 @@ function decrementCount() {
 }
 
 async function initializePayment() {
+    if (pricePerStudent === null) {
+        alert('⚠️ Pricing not loaded yet. Please wait...');
+        return;
+    }
+    
     // Show modal
     document.getElementById('paymentModal').classList.add('active');
     
@@ -366,6 +469,11 @@ async function initializePayment() {
                         display_name: "Photographer",
                         variable_name: "photographer_name",
                         value: '{{ photographer.name }}'
+                    },
+                    {
+                        display_name: "Price Per Student",
+                        variable_name: "price_per_student",
+                        value: pricePerStudent
                     }
                 ]
             },
@@ -443,7 +551,30 @@ async function updateLicenseFromServer() {
     }
 }
 
-// Initialize display
-updateDisplay();
+function showMessage(message, type) {
+    // Create a simple alert message
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type}`;
+    alertDiv.textContent = message;
+    alertDiv.style.position = 'fixed';
+    alertDiv.style.top = '20px';
+    alertDiv.style.right = '20px';
+    alertDiv.style.zIndex = '10000';
+    alertDiv.style.minWidth = '300px';
+    alertDiv.style.padding = '15px 20px';
+    alertDiv.style.borderRadius = '8px';
+    alertDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    
+    document.body.appendChild(alertDiv);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        alertDiv.remove();
+    }, 5000);
+}
+
+// Load pricing when page loads
+console.log('📄 License page loaded');
+loadPricingFromServer();
 </script>
 {% endblock %}

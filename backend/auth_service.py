@@ -1,11 +1,6 @@
 """
-Desktop App - Secure Authentication Service with API Key
+Desktop App - Secure Authentication Service with API Key (Peewee version)
 Works with the secure hosted backend
-
-IMPORTANT: Set these environment variables or hardcode them:
-- PHOTOSORTER_API_URL (backend URL)
-- DESKTOP_APP_API_KEY (from backend)
-- REQUEST_SIGNING_KEY (optional, for request signing)
 """
 
 import httpx
@@ -13,41 +8,43 @@ import json
 import hashlib
 import platform
 import uuid
-import hmac
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from peewee import *
 from dotenv import load_dotenv
 
 load_dotenv()
+
 # ==================== CONFIGURATION ====================
 API_BASE_URL = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
-DESKTOP_APP_API_KEY = os.getenv("DESKTOP_APP_API_KEY")
-REQUEST_SIGNING_KEY = os.getenv("REQUEST_SIGNING_KEY", "")  # Optional
+DESKTOP_APP_API_KEY =  ""
+REQUEST_SIGNING_KEY = os.getenv("REQUEST_SIGNING_KEY")
 
 LOCAL_CONFIG_PATH = Path.home() / ".photosorter" / "config.json"
 LOCAL_DB_PATH = Path.home() / ".photosorter" / "auth.db"
 
-Base = declarative_base()
+# Auth database
+auth_db = SqliteDatabase(None)
 
-class AuthToken(Base):
+
+class AuthToken(Model):
     """Store JWT tokens in local database"""
-    __tablename__ = 'auth_tokens'
+    class Meta:
+        database = auth_db
+        table_name = 'auth_tokens'
     
-    id = Column(Integer, primary_key=True)
-    token = Column(Text, nullable=False)
-    user_email = Column(String(100), nullable=False)
-    user_data = Column(Text)
-    license_data = Column(Text)
-    device_fingerprint = Column(String(64), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime)
-    last_used = Column(DateTime, default=datetime.utcnow)
-    is_valid = Column(Integer, default=1)
+    id = AutoField(primary_key=True)
+    token = TextField()
+    user_email = CharField(max_length=100)
+    user_data = TextField(null=True)
+    license_data = TextField(null=True)
+    device_fingerprint = CharField(max_length=64)
+    created_at = DateTimeField(default=datetime.utcnow)
+    expires_at = DateTimeField(null=True)
+    last_used = DateTimeField(default=datetime.utcnow)
+    is_valid = BooleanField(default=True)
 
 
 class SecureAuthService:
@@ -55,7 +52,8 @@ class SecureAuthService:
     
     def __init__(self):
         self.api_url = API_BASE_URL.rstrip("/")
-        self.api_key = DESKTOP_APP_API_KEY
+        self.api_key = "2EJYsmKOG4RYin38IyxfNxyhaZqdEvlAYX8XK7bNZeI"
+        print(self.api_key)
         self.signing_key = REQUEST_SIGNING_KEY
         
         self.token: Optional[str] = None
@@ -68,26 +66,25 @@ class SecureAuthService:
         self.device_fingerprint = self.generate_device_fingerprint()
         
         # Validate API key
-        if not self.api_key or self.api_key == "YOUR_API_KEY_HERE":
-            print("⚠️  WARNING: DESKTOP_APP_API_KEY not configured!")
-            print("   Get the API key from your backend server")
-            print("   Set it in environment variable: DESKTOP_APP_API_KEY")
+        # if not self.api_key or self.api_key == "YOUR_API_KEY_HERE":
+        #     print("  WARNING: DESKTOP_APP_API_KEY not configured!")
+        #     print("   Get the API key from your backend server")
+        #     print("   Set it in environment variable: DESKTOP_APP_API_KEY")
         
         self._init_db()
         self.load_session()
         
-        print(f"🔗 SecureAuthService initialized")
-        print(f"   API: {self.api_url}")
-        print(f"   API Key: {self.api_key[:10]}...{self.api_key[-4:]}")
-        print(f"   Device: {self.device_fingerprint[:16]}...")
+        # print(f" SecureAuthService initialized")
+        # print(f"   API: {self.api_url}")
+        # print(f"   API Key: {self.api_key[:10]}...{self.api_key[-4:]}")
+        # print(f"   Device: {self.device_fingerprint[:16]}...")
     
     def _init_db(self):
         """Initialize local SQLite database"""
         LOCAL_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(f'sqlite:///{LOCAL_DB_PATH}', echo=False)
-        Base.metadata.create_all(engine)
-        Session = sessionmaker(bind=engine)
-        self.db_session = Session()
+        auth_db.init(str(LOCAL_DB_PATH))
+        auth_db.connect()
+        auth_db.create_tables([AuthToken], safe=True)
     
     def generate_device_fingerprint(self) -> str:
         """Generate unique device fingerprint"""
@@ -107,11 +104,10 @@ class SecureAuthService:
         hasher.update(self.device_fingerprint.encode('utf-8'))
         return hasher.hexdigest()
     
-    # In your auth_service.py
     def get_auth_headers(self, include_signature: bool = False, body: str = "") -> Dict[str, str]:
         """Get authentication headers with API key"""
         headers = {
-            "X-API-Key": self.api_key,  # ← Make sure this is here
+            "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
         
@@ -124,14 +120,14 @@ class SecureAuthService:
         """Save JWT token to local database"""
         try:
             # Invalidate old tokens
-            self.db_session.query(AuthToken).filter(
-                AuthToken.device_fingerprint == self.device_fingerprint,
-                AuthToken.is_valid == 1
-            ).update({"is_valid": 0})
+            AuthToken.update(is_valid=False).where(
+                (AuthToken.device_fingerprint == self.device_fingerprint) &
+                (AuthToken.is_valid == True)
+            ).execute()
             
             expires_at = datetime.utcnow() + timedelta(days=30)
             
-            auth_token = AuthToken(
+            AuthToken.create(
                 token=token,
                 user_email=user_data.get('email', ''),
                 user_data=json.dumps(user_data),
@@ -141,46 +137,41 @@ class SecureAuthService:
                 last_used=datetime.utcnow()
             )
             
-            self.db_session.add(auth_token)
-            self.db_session.commit()
-            
-            print("✅ Token saved to local database")
+            print(" Token saved to local database")
         except Exception as e:
-            print(f"❌ Error saving token: {e}")
-            self.db_session.rollback()
+            print(f" Error saving token: {e}")
     
     def _load_token_from_db(self) -> Optional[AuthToken]:
         """Load valid JWT token from local database"""
         try:
-            auth_token = self.db_session.query(AuthToken).filter(
-                AuthToken.device_fingerprint == self.device_fingerprint,
-                AuthToken.is_valid == 1,
-                AuthToken.expires_at > datetime.utcnow()
+            auth_token = AuthToken.select().where(
+                (AuthToken.device_fingerprint == self.device_fingerprint) &
+                (AuthToken.is_valid == True) &
+                (AuthToken.expires_at > datetime.utcnow())
             ).order_by(AuthToken.created_at.desc()).first()
             
             if auth_token:
                 auth_token.last_used = datetime.utcnow()
-                self.db_session.commit()
-                print("✅ Loaded valid token from database")
+                auth_token.save()
+                print(" Loaded valid token from database")
                 return auth_token
             
             return None
         except Exception as e:
-            print(f"❌ Error loading token: {e}")
+            print(f" Error loading token: {e}")
             return None
     
     def _invalidate_token(self):
         """Invalidate current token"""
         try:
             if self.token:
-                self.db_session.query(AuthToken).filter(
-                    AuthToken.token == self.token,
-                    AuthToken.device_fingerprint == self.device_fingerprint
-                ).update({"is_valid": 0})
-                self.db_session.commit()
+                AuthToken.update(is_valid=False).where(
+                    (AuthToken.token == self.token) &
+                    (AuthToken.device_fingerprint == self.device_fingerprint)
+                ).execute()
                 print("🗑️ Token invalidated")
         except Exception as e:
-            print(f"❌ Error invalidating token: {e}")
+            print(f" Error invalidating token: {e}")
     
     def get_last_updated(self) -> Optional[datetime]:
         """Get last update time"""
@@ -204,9 +195,9 @@ class SecureAuthService:
             with open(LOCAL_CONFIG_PATH, "w") as f:
                 json.dump(session_data, f, indent=2)
             
-            print("✅ Session saved to JSON")
+            print(" Session saved to JSON")
         except Exception as e:
-            print(f"❌ Error saving session: {e}")
+            print(f" Error saving session: {e}")
     
     def load_session(self):
         """Load session from database or JSON"""
@@ -241,9 +232,9 @@ class SecureAuthService:
                     self.pending_email = session_data.get("pending_email")
                     self.password_hash = session_data.get("password_hash")
                     
-                    print("✅ Session migrated from JSON")
+                    print(" Session migrated from JSON")
             except Exception as e:
-                print(f"❌ Error loading JSON: {e}")
+                print(f" Error loading JSON: {e}")
     
     def clear_session(self):
         """Clear session"""
@@ -259,7 +250,7 @@ class SecureAuthService:
         if LOCAL_CONFIG_PATH.exists():
             LOCAL_CONFIG_PATH.unlink()
     
-    async def signup(self, name: str, email: str, password: str, phone: Optional[str] = None) -> Tuple[bool, str]:
+    async def signup(self, name: str, email: str, password: str, phone: Optional[str] = None) -> tuple[bool, str]:
         """Register new user"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -290,7 +281,7 @@ class SecureAuthService:
         except Exception as e:
             return False, f"Connection error: {str(e)}"
     
-    async def verify_email(self, email: str, otp_code: str) -> Tuple[bool, str]:
+    async def verify_email(self, email: str, otp_code: str) -> tuple[bool, str]:
         """Verify email with OTP"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -317,7 +308,7 @@ class SecureAuthService:
         except Exception as e:
             return False, f"Error: {str(e)}"
     
-    async def login(self, email: str, password: str) -> Tuple[bool, str]:
+    async def login(self, email: str, password: str) -> tuple[bool, str]:
         """Login and get JWT token"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -348,7 +339,7 @@ class SecureAuthService:
                 self._save_token_to_db(self.token, self.user_data, self.license_data)
                 self.save_session()
                 
-                print(f"✅ Login successful")
+                print(f" Login successful")
                 return True, "Login successful"
             else:
                 error = response.json()
@@ -359,7 +350,7 @@ class SecureAuthService:
         except Exception as e:
             return False, f"Error: {str(e)}"
     
-    def local_login(self, email: str, password: str) -> Tuple[bool, str]:
+    def local_login(self, email: str, password: str) -> tuple[bool, str]:
         """Offline authentication"""
         if not self.password_hash or not self.user_data or not self.token:
             return False, "No saved session. Please login online first."
@@ -371,10 +362,10 @@ class SecureAuthService:
         if input_hash != self.password_hash:
             return False, "Incorrect password."
         
-        print("✅ Local login successful (offline mode)")
+        print(" Local login successful (offline mode)")
         return True, "Authenticated locally"
     
-    async def resend_otp(self, email: str) -> Tuple[bool, str]:
+    async def resend_otp(self, email: str) -> tuple[bool, str]:
         """Resend OTP"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -398,10 +389,10 @@ class SecureAuthService:
     def logout(self):
         """Logout"""
         self.clear_session()
-        print("👤 Logged out")
+        print(" Logged out")
     
-    async def logout_remote(self) -> Tuple[bool, str]:
-        """Logout from remote server (optional, notifies server)"""
+    async def logout_remote(self) -> tuple[bool, str]:
+        """Logout from remote server (optional)"""
         if not self.token:
             self.logout()
             return True, "Logged out locally"
@@ -424,15 +415,11 @@ class SecureAuthService:
             self.logout()
             return True, "Logged out locally"
     
-    
-
-    async def forgot_password(self, email: str) -> Tuple[bool, str]:
+    async def forgot_password(self, email: str) -> tuple[bool, str]:
         """Request password reset OTP"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                body = json.dumps({
-                    "email": email
-                })
+                body = json.dumps({"email": email})
                 
                 response = await client.post(
                     f"{self.api_url}/auth/forgot-password",
@@ -442,22 +429,18 @@ class SecureAuthService:
             
             if response.status_code == 200:
                 data = response.json()
-                return True, data.get("message", "Password reset code sent to your email")
+                return True, data.get("message", "Password reset code sent")
             else:
                 error = response.json()
-                return False, error.get("detail", f"Failed to send reset code ({response.status_code})")
+                return False, error.get("detail", f"Failed ({response.status_code})")
         
         except httpx.ConnectError:
-            return False, "Cannot connect to server. Is it running?"
+            return False, "Cannot connect to server"
         except Exception as e:
-            return False, f"Connection error: {str(e)}"
-
-
-    async def verify_reset_otp(self, email: str, otp_code: str) -> Tuple[bool, str, Optional[str]]:
-        """
-        Verify password reset OTP
-        Returns: (success, message, reset_token)
-        """
+            return False, f"Error: {str(e)}"
+    
+    async def verify_reset_otp(self, email: str, otp_code: str) -> tuple[bool, str, Optional[str]]:
+        """Verify password reset OTP"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 body = json.dumps({
@@ -474,18 +457,17 @@ class SecureAuthService:
             if response.status_code == 200:
                 data = response.json()
                 reset_token = data.get("reset_token")
-                return True, data.get("message", "OTP verified successfully"), reset_token
+                return True, data.get("message", "OTP verified"), reset_token
             else:
                 error = response.json()
-                return False, error.get("detail", f"Verification failed ({response.status_code})"), None
+                return False, error.get("detail", "Verification failed"), None
         
         except httpx.ConnectError:
-            return False, "Cannot connect to server. Is it running?", None
+            return False, "Cannot connect to server", None
         except Exception as e:
-            return False, f"Connection error: {str(e)}", None
-
-
-    async def reset_password(self, reset_token: str, new_password: str) -> Tuple[bool, str]:
+            return False, f"Error: {str(e)}", None
+    
+    async def reset_password(self, reset_token: str, new_password: str) -> tuple[bool, str]:
         """Reset password with verified token"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -505,13 +487,13 @@ class SecureAuthService:
                 return True, data.get("message", "Password reset successful")
             else:
                 error = response.json()
-                return False, error.get("detail", f"Password reset failed ({response.status_code})")
+                return False, error.get("detail", "Password reset failed")
         
         except httpx.ConnectError:
-            return False, "Cannot connect to server. Is it running?"
+            return False, "Cannot connect to server"
         except Exception as e:
-            return False, f"Connection error: {str(e)}"
-        
+            return False, f"Error: {str(e)}"
+    
     def is_authenticated(self) -> bool:
         """Check if authenticated"""
         return self.token is not None and self.user_data is not None
@@ -558,7 +540,7 @@ class SecureAuthService:
                 return {**self.license_data, "cached": True, "message": "Cached (offline)"}
             return {"valid": False, "message": str(e)}
     
-    async def initialize_license_purchase(self, student_count: int) -> Tuple[bool, Dict]:
+    async def initialize_license_purchase(self, student_count: int) -> tuple[bool, Dict]:
         """Initialize license purchase"""
         if not self.token or not self.user_data:
             return False, {"error": "Not authenticated"}
@@ -585,7 +567,7 @@ class SecureAuthService:
         except Exception as e:
             return False, {"error": str(e)}
     
-    async def verify_payment(self, reference: str) -> Tuple[bool, Dict]:
+    async def verify_payment(self, reference: str) -> tuple[bool, Dict]:
         """Verify payment"""
         if not self.token:
             return False, {"error": "Not authenticated"}
@@ -617,7 +599,7 @@ class SecureAuthService:
         except Exception as e:
             return False, {"error": str(e)}
     
-    async def update_license_from_server(self) -> Tuple[bool, str]:
+    async def update_license_from_server(self) -> tuple[bool, str]:
         """Update license from server"""
         if not self.token:
             return False, "Not authenticated"

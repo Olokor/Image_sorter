@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, Depends, Cookie, Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
@@ -23,10 +24,10 @@ CLIENT_DIR = Path(__file__).parent
 if str(CLIENT_DIR) not in sys.path:
     sys.path.insert(0, str(CLIENT_DIR))
 
-from services.app_service import EnhancedAppService
+from app_service import EnhancedAppService
 from models import Student, Photo, CampSession, Photographer, DownloadRequest
-from services.license_manager import LicenseManager
-from services.auth_service import auth_service
+from license_manager import LicenseManager
+from auth_service import auth_service
 
 # Initialize FastAPI app
 app = FastAPI(title="Photo_Sorter App", version="1.0.0")
@@ -37,7 +38,7 @@ app_service = EnhancedAppService()
 # Initialize license_manager globally
 try:
     license_manager = LicenseManager()
-    print("✓ License manager initialized")
+    print(" License manager initialized")
 except Exception as e:
     print(f"⚠ License manager initialization failed: {e}")
     license_manager = None
@@ -151,6 +152,131 @@ def require_license(min_students: int = 0):
     
     return check
 
+# HELPER FUNCTIONS FOR BACKEND SYNC
+
+async def sync_student_to_backend(state_code: str, full_name: str, enrolled_at: datetime):
+    """
+    Sync individual student enrollment to backend
+    Returns dict with success status and updated license info
+    """
+    if not auth_service.is_authenticated() or not auth_service.token:
+        return {"success": False, "message": "Not authenticated"}
+    
+    try:
+        import httpx
+        
+        api_url = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{api_url}/students/sync-enrollment",
+                headers={
+                    "Authorization": f"Bearer {auth_service.token}",
+                    "X-API-Key": os.getenv("DESKTOP_APP_API_KEY"),
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "student_state_code": state_code,
+                    "student_name": full_name,
+                    "enrolled_at": enrolled_at.isoformat()
+                }
+            )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return {
+                "success": False,
+                "message": error_detail
+            }
+    
+    except Exception as e:
+        print(f"Backend sync error: {e}")
+        return {
+            "success": False,
+            "message": str(e)
+        }
+
+
+async def queue_enrollment_for_sync(student_id: int, state_code: str, full_name: str):
+    """
+    Queue failed enrollment for later sync
+    Store in local database for retry when connection is restored
+    """
+    try:
+        from models import db
+        
+        # Create a simple sync queue table (add to models.py if needed)
+        db.execute_sql("""
+            CREATE TABLE IF NOT EXISTS sync_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER,
+                state_code TEXT,
+                full_name TEXT,
+                enrolled_at TEXT,
+                synced INTEGER DEFAULT 0,
+                retry_count INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+        """)
+        
+        db.execute_sql("""
+            INSERT INTO sync_queue (student_id, state_code, full_name, enrolled_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (student_id, state_code, full_name, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+        
+        print(f"OK Queued student {state_code} for sync retry")
+    
+    except Exception as e:
+        print(f"Error queuing for sync: {e}")
+
+
+# Background task to retry failed syncs
+async def retry_pending_syncs():
+    """
+    Background task to retry failed enrollments
+    Call this periodically or on app startup
+    """
+    try:
+        from models import db
+        
+        cursor = db.execute_sql("""
+            SELECT id, student_id, state_code, full_name, enrolled_at, retry_count
+            FROM sync_queue
+            WHERE synced = 0 AND retry_count < 5
+            ORDER BY created_at ASC
+            LIMIT 10
+        """)
+        
+        pending = cursor.fetchall()
+        
+        for row in pending:
+            queue_id, student_id, state_code, full_name, enrolled_at, retry_count = row
+            
+            result = await sync_student_to_backend(
+                state_code=state_code,
+                full_name=full_name,
+                enrolled_at=datetime.fromisoformat(enrolled_at)
+            )
+            
+            if result.get("success"):
+                # Mark as synced
+                db.execute_sql("""
+                    UPDATE sync_queue SET synced = 1 WHERE id = ?
+                """, (queue_id,))
+                
+                print(f"OK Retry successful: {state_code}")
+            else:
+                # Increment retry count
+                db.execute_sql("""
+                    UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?
+                """, (queue_id,))
+                
+                print(f"WARNING Retry failed ({retry_count + 1}/5): {state_code}")
+    
+    except Exception as e:
+        print(f"Error in retry_pending_syncs: {e}")
 # ==================== AUTHENTICATION ROUTES ====================
 
 @app.get("/login", response_class=HTMLResponse)
@@ -473,6 +599,33 @@ async def get_license_status(_: bool = Depends(require_auth)):
     license_data = await auth_service.get_license_status()
     return license_data
 
+@license_router.get("/pricing")
+async def get_license_pricing():
+    '''Get current pricing from hosted backend'''
+    try:
+        print(f" Fetching pricing from: {auth_service.api_url}/license/pricing")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{auth_service.api_url}/license/pricing"
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print(f" Pricing fetched: ₦{data['price_per_student']}")
+                return data
+            else:
+                raise Exception(f"Server error: {response.status_code}")
+                
+    except Exception as e:
+        print(f"❌ Pricing fetch failed: {e}")
+        return {
+            "price_per_student": 200,
+            "currency": "NGN",
+            "validity_days": 30,
+            "fallback": True
+        }
+
 @license_router.post("/purchase/initialize")
 async def initialize_license_purchase(
     student_count: int = Form(...),
@@ -490,6 +643,43 @@ async def initialize_license_purchase(
         raise HTTPException(status_code=400, detail=data.get("error", "Payment initialization failed"))
     
     return data
+
+
+@license_router.post("/update-from-server")
+async def update_license_from_server(_: bool = Depends(require_auth)):
+    """
+    Update license from hosted backend server
+    Fetches latest license info and updates local data
+    """
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        print("Updating license from server...")
+        
+        # Call auth_service method to update license
+        success, message = await auth_service.update_license_from_server()
+        
+        if success:
+            return {
+                "success": True,
+                "message": message,
+                "license": auth_service.license_data
+            }
+        else:
+            return {
+                "success": False,
+                "message": message
+            }
+    
+    except Exception as e:
+        print(f"Error updating license: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to update: {str(e)}"
+        }
+
+
 
 @license_router.post("/verify-payment/{reference}")
 async def verify_payment(
@@ -635,7 +825,7 @@ async def create_share_session(
         raise HTTPException(400, "Student has no gallery photos")
 
     # Create local server for sharing if not started
-    from services.local_server import ImprovedLocalServer
+    from local_server import ImprovedLocalServer
     if not hasattr(app_service, 'local_server') or app_service.local_server is None:
         app_service.local_server = ImprovedLocalServer(app_service, port=8001) # Use a diff port?
         if not app_service.local_server.is_running():
@@ -759,17 +949,15 @@ async def enroll_student(
     email: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
     photos: List[UploadFile] = File(...),
-    photographer: Photographer = Depends(require_auth),
-    _license_check: bool = Depends(require_license())
+    photographer: Photographer = Depends(require_auth)
 ):
-    session = app_service.get_active_session()
-    if not session:
-        raise HTTPException(400, "No active session")
+    """Enroll student with backend sync"""
     
-    # Check student limit
-    available_students = auth_service.get_students_available()
-    current_student_count = session.student_count
-
+    # Verify photographer exists
+    if not photographer:
+        raise HTTPException(401, "Authentication required")
+    
+    # Check license first
     if not auth_service.has_valid_license():
         raise HTTPException(
             status_code=403,
@@ -782,6 +970,13 @@ async def enroll_student(
             detail="Your license has 0 students available. Please purchase more students to continue."
         )
     
+    session = app_service.get_active_session()
+    if not session:
+        raise HTTPException(400, "No active session")
+    
+    # Check student limit against available licenses
+    available_students = auth_service.get_students_available()
+    current_student_count = session.student_count
     
     if current_student_count >= available_students:
         raise HTTPException(
@@ -804,7 +999,7 @@ async def enroll_student(
                 f.write(await photo.read())
             photo_paths.append(str(file_path))
         
-        # Call the service layer (use the multiple photos method)
+        # Call the service layer
         student = app_service.enroll_student_multiple_photos(
             state_code=state_code,
             full_name=full_name,
@@ -814,21 +1009,63 @@ async def enroll_student(
             match_existing_photos=True
         )
         
-        # Update photographer's student count tracking
-        photographer.current_session_student_count = (photographer.current_session_student_count or 0) + 1
-        photographer.total_students_registered = (photographer.total_students_registered or 0) + 1
-        app_service.db_session.commit()
+        # ==================== SYNC TO BACKEND ====================
+        sync_success = False
+        sync_error = None
         
-        return {
+        try:
+            # Sync student enrollment to backend
+            sync_result = await sync_student_to_backend(
+                state_code=state_code,
+                full_name=full_name,
+                enrolled_at=datetime.utcnow()
+            )
+            
+            if sync_result.get("success"):
+                sync_success = True
+                # Update local license data with new count
+                auth_service.license_data = sync_result.get("license_status", {})
+                auth_service.last_updated = datetime.utcnow()
+                auth_service.save_session()
+                
+                print(f"SUCCESS Synced to backend. Students remaining: {sync_result.get('students_remaining')}")
+            else:
+                sync_error = sync_result.get("message", "Sync failed")
+                print(f"WARNING Backend sync failed: {sync_error}")
+        
+        except Exception as e:
+            sync_error = str(e)
+            print(f"WARNING Backend sync error: {e}")
+            # Don't fail enrollment if sync fails - queue for retry
+            await queue_enrollment_for_sync(student.id, state_code, full_name)
+        
+        # Update photographer's student count tracking
+        try:
+            if photographer and hasattr(photographer, 'save'):
+                photographer.current_session_student_count = (photographer.current_session_student_count or 0) + 1
+                photographer.total_students_registered = (photographer.total_students_registered or 0) + 1
+                photographer.save()
+                print(f"Updated photographer count: session={photographer.current_session_student_count}, total={photographer.total_students_registered}")
+        except Exception as e:
+            print(f"Warning: Could not update photographer counts: {e}")
+            # Don't fail enrollment if photographer update fails
+        
+        response_data = {
             "success": True,
             "message": f"Student '{student.full_name}' enrolled successfully.",
-            "student_id": student.id
+            "student_id": student.id,
+            "synced_to_backend": sync_success
         }
+        
+        if not sync_success and sync_error:
+            response_data["sync_warning"] = f"Enrollment successful but sync failed: {sync_error}. Will retry automatically."
+        
+        return response_data
+        
     except Exception as e:
         print(f"Enrollment error: {e}")
-        # Rollback on error
-        app_service.db_session.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred during enrollment: {str(e)}")
+
 
 
 @app.get("/api/students")
