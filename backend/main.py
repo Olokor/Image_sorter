@@ -102,7 +102,7 @@ def get_current_photographer(session_token: Optional[str] = Cookie(None)):
         return None
     
     photographer_id = active_sessions[session_token]['photographer_id']
-    photographer = app_service.db_session.get(Photographer, photographer_id)
+    photographer = Photographer.get_or_none(Photographer.id == photographer_id)
     
     if photographer and photographer.is_active:
         return photographer
@@ -122,7 +122,7 @@ def require_auth(session_token: Optional[str] = Cookie(None)):
     
     # If auth_service is authenticated but no local session, create one
     email = auth_service.user_data.get('email')
-    photographer = app_service.db_session.query(Photographer).filter_by(email=email).first()
+    photographer = Photographer.select().where(Photographer.email == email).first()
     
     if not photographer:
         raise HTTPException(status_code=401, detail="Local photographer not found")
@@ -151,7 +151,6 @@ def require_license(min_students: int = 0):
         return True
     
     return check
-
 # HELPER FUNCTIONS FOR BACKEND SYNC
 
 async def sync_student_to_backend(state_code: str, full_name: str, enrolled_at: datetime):
@@ -340,20 +339,20 @@ async def login(request: LoginRequest, response: Response):
                 days_since_update = (datetime.utcnow() - last_updated).days if last_updated else 999
                 
                 if days_since_update > 7:
-                    print("📡 Attempting background license refresh...")
+                    print(" Attempting background license refresh...")
                     try:
                         await auth_service.update_license_from_server()
                     except:
-                        print("⚠️ Could not refresh license (offline mode)")
+                        print(" Could not refresh license (offline mode)")
             except:
                 pass
             
             # Get or create local photographer
-            photographer = app_service.db_session.query(Photographer).filter_by(email=email).first()
+            photographer = Photographer.select().where(Photographer.email == email).first()
             
             if photographer:
                 photographer.last_login = datetime.utcnow()
-                app_service.db_session.commit()
+                photographer.save()
                 
                 # Create/update session cookie
                 session_token = generate_session_token()
@@ -398,12 +397,12 @@ async def login(request: LoginRequest, response: Response):
         }
 
     # Get or create local photographer
-    photographer = app_service.db_session.query(Photographer).filter_by(email=user_data['email']).first()
+    photographer = Photographer.select().where(Photographer.email == user_data['email']).first()
     
     if not photographer:
         password_hash = hash_password_local(password, email)
         
-        photographer = Photographer(
+        photographer = Photographer.create(
             name=user_data['name'],
             email=user_data['email'],
             phone=user_data.get('phone'),
@@ -413,15 +412,12 @@ async def login(request: LoginRequest, response: Response):
             current_session_student_count=0,
             total_students_registered=0
         )
-        app_service.db_session.add(photographer)
-        app_service.db_session.commit()
-        app_service.db_session.refresh(photographer)
     else:
         password_hash = hash_password_local(password, email)
         photographer.password_hash = password_hash
         photographer.is_active = True
         photographer.last_login = datetime.utcnow()
-        app_service.db_session.commit()
+        photographer.save()
     
     # Create local session
     session_token = generate_session_token()
@@ -440,7 +436,7 @@ async def login(request: LoginRequest, response: Response):
         secure=False
     )
 
-    print(f"✅ JWT Token stored: {auth_service.token[:20]}...")
+    print(f" JWT Token stored: {auth_service.token[:20]}...")
     return {
         "success": True,
         "message": "Login successful",
@@ -448,6 +444,7 @@ async def login(request: LoginRequest, response: Response):
         "license": auth_service.license_data,
         "offline_mode": False
     }
+
 
 @router.post("/logout")
 async def logout(response: Response, session_token: Optional[str] = Cookie(None)):
@@ -587,23 +584,38 @@ async def get_students(
 
 license_router = APIRouter(prefix="/api/license", tags=["License"])
 
+
+# ==================== AUTHENTICATION DEPENDENCY ====================
+
+def require_auth():
+    """Check if user is authenticated"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return True
+
+
+# ==================== LICENSE STATUS ====================
+
 @license_router.get("/status")
 async def get_license_status(_: bool = Depends(require_auth)):
     """Get current license status from auth_service with JWT"""
     if not auth_service.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    print(f"🔑 Using JWT token for license status: {auth_service.token[:20] if auth_service.token else 'None'}...")
+    print(f"Using JWT token for license status: {auth_service.token[:20] if auth_service.token else 'None'}...")
     
     # Fetch latest from server using JWT
     license_data = await auth_service.get_license_status()
     return license_data
 
+
+# ==================== PRICING ====================
+
 @license_router.get("/pricing")
 async def get_license_pricing():
-    '''Get current pricing from hosted backend'''
+    """Get current pricing from hosted backend (PUBLIC - no auth required)"""
     try:
-        print(f" Fetching pricing from: {auth_service.api_url}/license/pricing")
+        import httpx
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
@@ -612,19 +624,23 @@ async def get_license_pricing():
             
             if response.status_code == 200:
                 data = response.json()
-                print(f" Pricing fetched: ₦{data['price_per_student']}")
+                print(f"Pricing fetched: {data['price_per_student']}")
                 return data
             else:
                 raise Exception(f"Server error: {response.status_code}")
                 
     except Exception as e:
-        print(f"❌ Pricing fetch failed: {e}")
+        print(f"Pricing fetch failed: {e}")
+        # Fallback to default price
         return {
             "price_per_student": 200,
             "currency": "NGN",
             "validity_days": 30,
             "fallback": True
         }
+
+
+# ==================== PAYMENT INITIALIZATION ====================
 
 @license_router.post("/purchase/initialize")
 async def initialize_license_purchase(
@@ -635,15 +651,58 @@ async def initialize_license_purchase(
     if not auth_service.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    print(f"🔑 Using JWT token for payment init: {auth_service.token[:20] if auth_service.token else 'None'}...")
+    print(f"Using JWT token for payment init: {auth_service.token[:20] if auth_service.token else 'None'}...")
     
-    success, data = await auth_service.initialize_license_purchase(student_count)
+    try:
+        success, data = await auth_service.initialize_license_purchase(student_count)
+        
+        if not success:
+            raise HTTPException(
+                status_code=400, 
+                detail=data.get("error", "Payment initialization failed")
+            )
+        
+        return data
     
-    if not success:
-        raise HTTPException(status_code=400, detail=data.get("error", "Payment initialization failed"))
-    
-    return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Payment initialization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+# ==================== PAYMENT VERIFICATION ====================
+
+@license_router.post("/verify-payment/{reference}")
+async def verify_payment(
+    reference: str,
+    _: bool = Depends(require_auth)
+):
+    """Verify payment and activate license via auth_service with JWT"""
+    if not auth_service.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    print(f"Using JWT token for payment verification: {auth_service.token[:20] if auth_service.token else 'None'}...")
+    
+    try:
+        success, data = await auth_service.verify_payment(reference)
+        
+        if not success:
+            raise HTTPException(
+                status_code=400, 
+                detail=data.get("error", "Verification failed")
+            )
+        
+        return data
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Payment verification error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== UPDATE LICENSE FROM SERVER ====================
 
 @license_router.post("/update-from-server")
 async def update_license_from_server(_: bool = Depends(require_auth)):
@@ -678,46 +737,7 @@ async def update_license_from_server(_: bool = Depends(require_auth)):
             "success": False,
             "message": f"Failed to update: {str(e)}"
         }
-
-
-
-@license_router.post("/verify-payment/{reference}")
-async def verify_payment(
-    reference: str,
-    _: bool = Depends(require_auth)
-):
-    """Verify payment and activate license via auth_service with JWT"""
-    if not auth_service.is_authenticated():
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    print(f"🔑 Using JWT token for payment verification: {auth_service.token[:20] if auth_service.token else 'None'}...")
-    
-    success, data = await auth_service.verify_payment(reference)
-    
-    if not success:
-        raise HTTPException(status_code=400, detail=data.get("error", "Verification failed"))
-    
-    return data
-
-@license_router.post("/update-from-server")
-async def update_license_from_server(_: bool = Depends(require_auth)):
-    """Update license from server (after payment) via auth_service with JWT"""
-    if not auth_service.is_authenticated():
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    print(f"🔑 Using JWT token for license update: {auth_service.token[:20] if auth_service.token else 'None'}...")
-    
-    success, message = await auth_service.update_license_from_server()
-    
-    return {
-        "success": success,
-        "message": message,
-        "license": auth_service.license_data if success else None
-    }
-
 app.include_router(license_router)
-
-
 # ==================== PROTECTED ROUTES ====================
 
 @app.get("/", response_class=HTMLResponse)
