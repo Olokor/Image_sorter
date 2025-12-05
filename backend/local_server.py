@@ -1206,6 +1206,22 @@ class ImprovedLocalServer:
                 "success": True,
                 "message": "Request submitted. Please wait for photographer approval."
             }
+        
+        @self.app.get("/download-status/{session_uuid}")
+        async def get_download_status(session_uuid: str):
+            """Get current download status for a session"""
+            if session_uuid not in self.active_sessions:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            session_data = self.active_sessions[session_uuid]
+            
+            return {
+                "downloads_used": session_data['downloads_used'],
+                "download_limit": session_data['download_limit'],
+                "downloads_remaining": session_data['download_limit'] - session_data['downloads_used'],
+                "is_expired": datetime.utcnow() > session_data['expires_at'],
+                "expires_at": session_data['expires_at'].isoformat()
+            }
     
     def build_secure_gallery_page(self, student, photos, session_data, session_uuid) -> str:
         """Build HTML gallery page with canvas-based secure rendering"""
@@ -1365,6 +1381,61 @@ class ImprovedLocalServer:
                     text-align: center;
                     padding: 20px;
                 }}
+                .download-modal {{
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: rgba(0,0,0,0.8);
+                    z-index: 10000;
+                    align-items: center;
+                    justify-content: center;
+                }}
+                .download-modal.active {{
+                    display: flex;
+                }}
+                .modal-content {{
+                    background: white;
+                    padding: 40px;
+                    border-radius: 16px;
+                    max-width: 500px;
+                    width: 90%;
+                    text-align: center;
+                }}
+                .modal-content h2 {{
+                    color: #E67E22;
+                    margin-bottom: 20px;
+                }}
+                .modal-content p {{
+                    color: #666;
+                    margin-bottom: 20px;
+                    line-height: 1.6;
+                }}
+                .modal-content button {{
+                    margin: 10px 5px;
+                    padding: 12px 24px;
+                    border: none;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 600;
+                }}
+                .btn-request {{
+                    background: #3498DB;
+                    color: white;
+                }}
+                .btn-request:hover {{
+                    background: #2980B9;
+                }}
+                .btn-close {{
+                    background: #95A5A6;
+                    color: white;
+                }}
+                .btn-close:hover {{
+                    background: #7F8C8D;
+                }}
                 @media (max-width: 768px) {{
                     .gallery {{
                         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1392,10 +1463,23 @@ class ImprovedLocalServer:
                 </div>
                 
                 <div class="footer">
-                    <p class="stats">
-                        📥 Downloads: {session_data['downloads_used']}/{session_data['download_limit']} | 
+                    <p class="stats" id="downloadStats">
+                        📥 Downloads: <span id="downloadsUsed">{session_data['downloads_used']}</span>/<span id="downloadLimit">{session_data['download_limit']}</span> | 
                         ⏰ Expires: {session_data['expires_at'].strftime('%Y-%m-%d %H:%M')}
                     </p>
+                </div>
+            </div>
+            
+            <!-- Download Limit Modal -->
+            <div id="downloadLimitModal" class="download-modal">
+                <div class="modal-content">
+                    <h2>⚠️ Download Limit Reached</h2>
+                    <p>You have used all your available downloads for this gallery.</p>
+                    <p>Would you like to request more downloads from the photographer?</p>
+                    <div>
+                        <button class="btn-request" onclick="requestMoreDownloadsFromModal()">📩 Request More Downloads</button>
+                        <button class="btn-close" onclick="closeDownloadModal()">Close</button>
+                    </div>
                 </div>
             </div>
             
@@ -1413,6 +1497,76 @@ class ImprovedLocalServer:
                 const photos = {photo_data_json};
                 const studentCode = '{student.state_code}';
                 const sessionUUID = '{session_uuid}';
+                let currentDownloadsUsed = {session_data['downloads_used']};
+                let currentDownloadLimit = {session_data['download_limit']};
+                
+                // Update download stats display
+                function updateDownloadStats(used, limit) {{
+                    currentDownloadsUsed = used;
+                    currentDownloadLimit = limit;
+                    document.getElementById('downloadsUsed').textContent = used;
+                    document.getElementById('downloadLimit').textContent = limit;
+                    
+                    // Check if limit reached
+                    if (used >= limit) {{
+                        disableAllDownloadButtons();
+                        showDownloadLimitModal();
+                    }}
+                }}
+                
+                // Disable all download buttons
+                function disableAllDownloadButtons() {{
+                    const downloadButtons = document.querySelectorAll('.download-btn');
+                    downloadButtons.forEach(btn => {{
+                        btn.disabled = true;
+                        btn.style.background = '#95A5A6';
+                        btn.style.cursor = 'not-allowed';
+                        btn.textContent = '❌ Download Limit Reached';
+                    }});
+                }}
+                
+                // Show download limit modal
+                function showDownloadLimitModal() {{
+                    document.getElementById('downloadLimitModal').classList.add('active');
+                }}
+                
+                // Close download modal
+                function closeDownloadModal() {{
+                    document.getElementById('downloadLimitModal').classList.remove('active');
+                }}
+                
+                // Handle download click
+                async function handleDownload(photoId, event) {{
+                    event.preventDefault();
+                    
+                    // Check if limit already reached
+                    if (currentDownloadsUsed >= currentDownloadLimit) {{
+                        showDownloadLimitModal();
+                        return;
+                    }}
+                    
+                    // Proceed with download
+                    const downloadUrl = '/download/' + photoId + '?session=' + sessionUUID;
+                    window.location.href = downloadUrl;
+                    
+                    // Update stats after a short delay (to allow download to start)
+                    setTimeout(async () => {{
+                        await checkDownloadStatus();
+                    }}, 1000);
+                }}
+                
+                // Check download status from server
+                async function checkDownloadStatus() {{
+                    try {{
+                        const response = await fetch('/download-status/' + sessionUUID);
+                        if (response.ok) {{
+                            const data = await response.json();
+                            updateDownloadStats(data.downloads_used, data.download_limit);
+                        }}
+                    }} catch (error) {{
+                        console.error('Failed to check download status:', error);
+                    }}
+                }}
                 
                 function renderSecureImage(photoData, container) {{
                     const img = new Image();
@@ -1480,7 +1634,21 @@ class ImprovedLocalServer:
                         
                         const actions = document.createElement('div');
                         actions.className = 'photo-actions';
-                        actions.innerHTML = '<a href="/download/' + photo.id + '?session=' + sessionUUID + '" download><button class="download-btn">⬇ Download Original</button></a>';
+                        
+                        const downloadBtn = document.createElement('button');
+                        downloadBtn.className = 'download-btn';
+                        downloadBtn.textContent = '⬇ Download Original';
+                        downloadBtn.onclick = (e) => handleDownload(photo.id, e);
+                        
+                        // Disable if already at limit
+                        if (currentDownloadsUsed >= currentDownloadLimit) {{
+                            downloadBtn.disabled = true;
+                            downloadBtn.style.background = '#95A5A6';
+                            downloadBtn.style.cursor = 'not-allowed';
+                            downloadBtn.textContent = '❌ Download Limit Reached';
+                        }}
+                        
+                        actions.appendChild(downloadBtn);
                         
                         card.appendChild(photoContainer);
                         card.appendChild(actions);
@@ -1507,6 +1675,32 @@ class ImprovedLocalServer:
                         }}
                     }} catch (error) {{
                         alert('✗ Failed to submit request');
+                    }}
+                }}
+                
+                // Request more downloads from modal
+                async function requestMoreDownloadsFromModal() {{
+                    const reason = prompt('Please tell the photographer why you need more downloads:');
+                    
+                    if (reason === null) {{
+                        return; // User cancelled
+                    }}
+                    
+                    try {{
+                        const response = await fetch('/request-more-downloads?session=' + sessionUUID + '&additional_downloads=10&reason=' + encodeURIComponent(reason || 'Need more downloads'), {{
+                            method: 'POST'
+                        }});
+                        
+                        const data = await response.json();
+                        
+                        if (data.success) {{
+                            closeDownloadModal();
+                            alert('✓ Request submitted successfully!\n\nThe photographer has been notified and will review your request.');
+                        }} else {{
+                            alert('✗ Failed to submit request. Please try again.');
+                        }}
+                    }} catch (error) {{
+                        alert('✗ Failed to submit request. Please check your connection.');
                     }}
                 }}
                 
