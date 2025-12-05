@@ -1402,6 +1402,29 @@ class ImprovedLocalServer:
             <script>
                 console.log('🎬 Gallery script started');
                 
+                // Disable right-click and common shortcuts
+                document.addEventListener('contextmenu', e => e.preventDefault());
+                document.addEventListener('keydown', e => {{
+                    if (e.key === 'F12' || 
+                        (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J')) ||
+                        (e.ctrlKey && e.key === 'u')) {{
+                        e.preventDefault();
+                    }}
+                }});
+                
+                // Disable long-press on mobile (prevents save image)
+                document.addEventListener('touchstart', function(e) {{
+                    if (e.target.tagName === 'CANVAS' || e.target.tagName === 'IMG') {{
+                        e.preventDefault();
+                    }}
+                }}, {{ passive: false }});
+                
+                document.addEventListener('touchend', function(e) {{
+                    if (e.target.tagName === 'CANVAS' || e.target.tagName === 'IMG') {{
+                        e.preventDefault();
+                    }}
+                }}, {{ passive: false }});
+                
                 // Parse photos - SIMPLIFIED approach
                 let photos = [];
                 try {{
@@ -1484,6 +1507,23 @@ class ImprovedLocalServer:
                             canvas.width = width;
                             canvas.height = height;
                             ctx.drawImage(img, 0, 0, width, height);
+                            
+                            // Add watermark overlay
+                            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                            ctx.fillRect(width - 150, height - 40, 145, 35);
+                            
+                            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                            ctx.font = 'bold 12px Arial';
+                            ctx.fillText(studentCode, width - 145, height - 20);
+                            ctx.font = '10px Arial';
+                            ctx.fillText(new Date().toLocaleString(), width - 145, height - 7);
+                            
+                            // Prevent dragging and right-click on canvas
+                            canvas.oncontextmenu = e => e.preventDefault();
+                            canvas.ondragstart = e => e.preventDefault();
+                            canvas.style.userSelect = 'none';
+                            canvas.style.webkitUserSelect = 'none';
+                            canvas.style.pointerEvents = 'none';
                             
                             photoContainer.innerHTML = '';
                             photoContainer.appendChild(canvas);
