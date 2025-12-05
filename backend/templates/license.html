@@ -407,10 +407,8 @@ function decrementCount() {
 }
 
 async function initializePayment() {
-    if (pricePerStudent === null) {
-        alert('⚠️ Pricing not loaded yet. Please wait...');
-        return;
-    }
+    // Reset any previous payment reference to get a fresh one
+    currentPaymentReference = null;
     
     // Show modal
     document.getElementById('paymentModal').classList.add('active');
@@ -420,7 +418,7 @@ async function initializePayment() {
         const formData = new FormData();
         formData.append('student_count', studentCount);
         
-        console.log('🔄 Initializing payment for', studentCount, 'students...');
+        console.log(' Initializing payment for', studentCount, 'students...');
         
         // Call local backend API (which will forward to hosted backend with JWT)
         const response = await fetch('/api/license/purchase/initialize', {
@@ -432,15 +430,31 @@ async function initializePayment() {
         
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('❌ Response error:', errorText);
+            console.error(' Response error:', errorText);
             throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
         
-        const data = await response.json();
+        let data;
+        try {
+            data = await response.json();
+        } catch (jsonError) {
+            console.error('❌ Failed to parse JSON response:', jsonError);
+            throw new Error('Invalid response format from server');
+        }
+        
         console.log('📦 Response data:', data);
         
-        if (!data.success) {
-            throw new Error(data.error || 'Payment initialization failed');
+        // Check if response has the required fields
+        if (!data || typeof data !== 'object') {
+            throw new Error('Invalid response from server');
+        }
+        
+        if (!data.success && data.error) {
+            throw new Error(data.error);
+        }
+        
+        if (!data.reference || !data.public_key || !data.amount) {
+            throw new Error('Incomplete payment data received from server');
         }
         
         currentPaymentReference = data.reference;
@@ -448,50 +462,84 @@ async function initializePayment() {
         // Hide modal
         document.getElementById('paymentModal').classList.remove('active');
         
-        console.log('✓ Payment initialized:', data.reference);
+        console.log('✅ Payment initialized:', data.reference);
         console.log('💳 Opening Paystack with key:', data.public_key);
+        console.log('💰 Amount (from server):', data.amount);
+        
+        // Get email from response data (server should include it) or fallback to template
+        let photographerEmail = data.email || '{{ photographer.email if photographer else "" }}';
+        
+        // If still empty, try to get from user_data in response
+        if (!photographerEmail || photographerEmail.trim() === '') {
+            console.error('❌ No email available from server or template');
+            throw new Error('Photographer email is missing. Please ensure you are logged in.');
+        }
+        
+        console.log('📧 Email:', photographerEmail);
+        
+        // IMPORTANT: Backend sends amount in NAIRA, not kobo
+        // We need to convert to kobo (multiply by 100) for Paystack
+        // Backend returns amount like 2000 (for 10 students at ₦200 each)
+        let amountInKobo = Math.round(data.amount * 100);
+        
+        console.log('💰 Amount from server (Naira):', data.amount);
+        console.log('💱 Converted to kobo for Paystack:', amountInKobo);
+        
+        // Validate amount
+        if (amountInKobo < 10000) {
+            throw new Error('Invalid payment amount: ' + amountInKobo + ' kobo');
+        }
+        
+        console.log('📦 Paystack configuration:', {
+            key: data.public_key ? data.public_key.substring(0, 10) + '...' : 'missing',
+            email: photographerEmail,
+            amount: amountInKobo,
+            currency: 'NGN',
+            ref: data.reference
+        });
         
         // Initialize Paystack popup
-        const handler = PaystackPop.setup({
-            key: data.public_key,
-            email: '{{ photographer.email }}',
-            amount: data.amount * 100, // Convert to kobo
-            currency: 'NGN',
-            ref: data.reference,
-            metadata: {
-                custom_fields: [
-                    {
-                        display_name: "Student Count",
-                        variable_name: "student_count",
-                        value: studentCount
-                    },
-                    {
-                        display_name: "Photographer",
-                        variable_name: "photographer_name",
-                        value: '{{ photographer.name }}'
-                    },
-                    {
-                        display_name: "Price Per Student",
-                        variable_name: "price_per_student",
-                        value: pricePerStudent
-                    }
-                ]
-            },
-            callback: function(response) {
-                console.log('✓ Paystack payment successful:', response.reference);
-                showMessage('Payment successful! Verifying...', 'success');
-                verifyPayment(response.reference);
-            },
-            onClose: function() {
-                console.log('⚠ Paystack popup closed');
-                showMessage('Payment cancelled', 'info');
-            }
-        });
+        let handler;
+        try {
+            handler = PaystackPop.setup({
+                key: data.public_key,
+                email: photographerEmail,
+                amount: amountInKobo,
+                currency: 'NGN',
+                ref: data.reference,
+                metadata: {
+                    custom_fields: [
+                        {
+                            display_name: "Student Count",
+                            variable_name: "student_count",
+                            value: studentCount
+                        },
+                        {
+                            display_name: "Photographer",
+                            variable_name: "photographer_name",
+                            value: '{{ photographer.name }}'
+                        }
+                    ]
+                },
+                callback: function(response) {
+                    console.log('✅ Paystack payment successful:', response.reference);
+                    showMessage('Payment successful! Verifying...', 'success');
+                    verifyPayment(response.reference);
+                },
+                onClose: function() {
+                    console.log('❌ Paystack popup closed');
+                    showMessage('Payment cancelled', 'info');
+                }
+            });
+        } catch (setupError) {
+            console.error('❌ Paystack setup error:', setupError);
+            throw new Error('Failed to initialize Paystack: ' + setupError.message);
+        }
         
         handler.openIframe();
         
     } catch (error) {
-        console.error('❌ Payment initialization error:', error);
+        console.error(' Payment initialization error:', error);
         document.getElementById('paymentModal').classList.remove('active');
         showMessage('Error: ' + error.message, 'error');
     }
@@ -507,7 +555,14 @@ async function verifyPayment(reference) {
         
         console.log('📥 Verification response status:', response.status);
         
-        const data = await response.json();
+        let data;
+        try {
+            data = await response.json();
+        } catch (jsonError) {
+            console.error('❌ Failed to parse verification response:', jsonError);
+            throw new Error('Invalid response format from server');
+        }
+        
         console.log('📦 Verification data:', data);
         
         if (data.success) {

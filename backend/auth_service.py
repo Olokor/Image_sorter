@@ -19,7 +19,7 @@ load_dotenv()
 
 # ==================== CONFIGURATION ====================
 API_BASE_URL = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
-DESKTOP_APP_API_KEY =  ""
+DESKTOP_APP_API_KEY =  "2EJYsmKOG4RYin38IyxfNxyhaZqdEvlAYX8XK7bNZeI"
 REQUEST_SIGNING_KEY = os.getenv("REQUEST_SIGNING_KEY")
 
 LOCAL_CONFIG_PATH = Path.home() / ".photosorter" / "config.json"
@@ -298,16 +298,33 @@ class SecureAuthService:
             
             if response.status_code == 200:
                 data = response.json()
-                self.pending_email = None
-                self.save_session()
-                return True, data.get("message", "Email verified")
+                
+                # CRITICAL FIX: After email verification, automatically login
+                # This gets the JWT token for the newly verified user
+                if data.get("success", False):
+                    self.pending_email = None
+                    self.save_session()
+                    
+                    # Check if backend returns a token directly
+                    if "access_token" in data:
+                        self.token = data["access_token"]
+                        self.user_data = data.get("user", {})
+                        self.license_data = data.get("license_status", {})
+                        self.last_updated = datetime.utcnow()
+                        
+                        self._save_token_to_db(self.token, self.user_data, self.license_data)
+                        self.save_session()
+                    
+                    return True, data.get("message", "Email verified successfully")
+                else:
+                    return False, data.get("message", "Verification failed")
             else:
                 error = response.json()
                 return False, error.get("detail", "Verification failed")
         
         except Exception as e:
             return False, f"Error: {str(e)}"
-    
+        
     async def login(self, email: str, password: str) -> tuple[bool, str]:
         """Login and get JWT token"""
         try:

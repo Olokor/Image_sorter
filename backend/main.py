@@ -651,24 +651,24 @@ async def initialize_license_purchase(
     if not auth_service.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    print(f"Using JWT token for payment init: {auth_service.token[:20] if auth_service.token else 'None'}...")
+    print(f" Using JWT token for payment init: {auth_service.token[:20] if auth_service.token else 'None'}...")
     
-    try:
-        success, data = await auth_service.initialize_license_purchase(student_count)
-        
-        if not success:
-            raise HTTPException(
-                status_code=400, 
-                detail=data.get("error", "Payment initialization failed")
-            )
-        
-        return data
+    success, data = await auth_service.initialize_license_purchase(student_count)
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Payment initialization error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    if not success:
+        raise HTTPException(status_code=400, detail=data.get("error", "Payment initialization failed"))
+    
+    # Ensure response has success field for frontend
+    if "success" not in data:
+        data["success"] = True
+    
+    # Include email in response for frontend use
+    if "email" not in data and auth_service.user_data:
+        data["email"] = auth_service.user_data.get("email")
+    
+    print(f"Payment init response: success={data.get('success')}, email={data.get('email')}, reference={data.get('reference')}")
+    
+    return data
 
 
 # ==================== PAYMENT VERIFICATION ====================
@@ -692,6 +692,10 @@ async def verify_payment(
                 status_code=400, 
                 detail=data.get("error", "Verification failed")
             )
+        
+        # Ensure response has success field for frontend
+        if "success" not in data:
+            data["success"] = True
         
         return data
     

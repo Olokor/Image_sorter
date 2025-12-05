@@ -359,24 +359,37 @@ function clearQR() {
 
 // Show message helper
 function showMessage(message, type) {
-    // Use the base template's showMessage if available, otherwise alert
-    if (typeof window.showMessage === 'function') {
-        window.showMessage(message, type);
-    } else {
-        // Fallback: create temporary alert
-        const alertDiv = document.createElement('div');
-        alertDiv.className = `alert alert-${type}`;
-        alertDiv.textContent = message;
-        alertDiv.style.position = 'fixed';
-        alertDiv.style.top = '20px';
-        alertDiv.style.right = '20px';
-        alertDiv.style.zIndex = '9999';
-        alertDiv.style.minWidth = '300px';
-        
-        document.body.appendChild(alertDiv);
-        
-        setTimeout(() => alertDiv.remove(), 3000);
+    // Create temporary alert
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type}`;
+    alertDiv.textContent = message;
+    alertDiv.style.position = 'fixed';
+    alertDiv.style.top = '20px';
+    alertDiv.style.right = '20px';
+    alertDiv.style.zIndex = '9999';
+    alertDiv.style.minWidth = '300px';
+    alertDiv.style.padding = '15px 20px';
+    alertDiv.style.borderRadius = '8px';
+    alertDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    
+    // Style based on type
+    if (type === 'success') {
+        alertDiv.style.background = '#D5F4E6';
+        alertDiv.style.color = '#27AE60';
+        alertDiv.style.border = '1px solid #27AE60';
+    } else if (type === 'error') {
+        alertDiv.style.background = '#FADBD8';
+        alertDiv.style.color = '#C0392B';
+        alertDiv.style.border = '1px solid #C0392B';
+    } else if (type === 'info') {
+        alertDiv.style.background = '#E8F4FD';
+        alertDiv.style.color = '#2980B9';
+        alertDiv.style.border = '1px solid #2980B9';
     }
+    
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => alertDiv.remove(), 3000);
 }
 
 // Load sessions on page load

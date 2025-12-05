@@ -533,7 +533,7 @@
             btn.textContent = 'Verifying...';
             
             try {
-                const response = await fetch('/auth/verify-email', {
+                const response = await fetch('/api/auth/verify-email', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -545,12 +545,15 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    showAlert('Email verified! You can now login.', 'success');
+                    showAlert('Email verified! Please login with your credentials.', 'success');
                     setTimeout(() => {
+                        // Clear OTP inputs
                         for (let i = 1; i <= 6; i++) {
                             document.getElementById(`otp${i}`).value = '';
                         }
+                        // Go to login tab with email pre-filled
                         switchTab('login');
+                        document.querySelector('#loginForm input[name="email"]').value = pendingEmail;
                     }, 2000);
                 } else {
                     showAlert(data.message || 'Invalid verification code', 'error');

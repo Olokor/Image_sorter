@@ -219,3 +219,4 @@ backend/public_key.pem
 backend/build.py
 backend/launcher.py
 backend/pywebview_launcher.py
+backend/external_backend_code.py
