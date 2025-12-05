@@ -552,7 +552,8 @@ async def get_students(
 ):
     """Get students - optionally from specific session"""
     if session_id:
-        session = app_service.db_session.query(CampSession).get(session_id)
+        # Use Peewee ORM syntax
+        session = CampSession.get_or_none(CampSession.id == session_id)
         if not session:
             raise HTTPException(404, "Session not found")
     else:
@@ -898,7 +899,8 @@ async def get_share_sessions(photographer: Photographer = Depends(require_auth))
     
     sessions_data = []
     for uuid, data in app_service.local_server.active_sessions.items():
-        student = app_service.db_session.query(Student).get(data['student_id'])
+        # Use Peewee ORM syntax
+        student = Student.get_or_none(Student.id == data['student_id'])
         if student:
             sessions_data.append({
                 "uuid": uuid,
@@ -1126,7 +1128,11 @@ async def get_students(photographer: Photographer = Depends(require_auth)):
 @app.delete("/api/students/{student_id}")
 async def delete_student(student_id: int, photographer: Photographer = Depends(require_auth)):
     """Delete a student"""
-    student = app_service.db_session.get(Student, student_id)
+    # Use Peewee ORM syntax
+    student = Student.get_or_none(Student.id == student_id)
+    if not student:
+        raise HTTPException(404, "Student not found")
+    
     if student.total_downloads > 0:
         raise HTTPException(
             403,
@@ -1213,12 +1219,13 @@ async def get_review_faces(photographer: Photographer = Depends(require_auth)):
     result = []
     
     for face in faces:
-        photo = app_service.db_session.query(Photo).get(face.photo_id)
+        # Use Peewee ORM syntax
+        photo = Photo.get_or_none(Photo.id == face.photo_id)
         student = None
         reference_photos = []
         
         if face.student_id:
-            student = app_service.db_session.get(Student, face.student_id)
+            student = Student.get_or_none(Student.id == face.student_id)
             
             # Get reference photo paths
             if student and student.reference_photo_path:
@@ -1259,7 +1266,8 @@ async def serve_reference_photo(
     photographer: Photographer = Depends(require_auth)
 ):
     """Serve student reference photo"""
-    student = app_service.db_session.get(Student, student_id)
+    # Use Peewee ORM syntax
+    student = Student.get_or_none(Student.id == student_id)
     if not student or not student.reference_photo_path:
         raise HTTPException(404, "Reference photo not found")
     
@@ -1302,7 +1310,8 @@ async def share_page(request: Request, photographer: Photographer = Depends(requ
 @app.get("/photo/{photo_id}")
 async def serve_photo(photo_id: int, thumbnail: bool = False, photographer: Photographer = Depends(require_auth)):
     """Serve photo file (thumbnail or original)"""
-    photo = app_service.db_session.get(Photo, photo_id)
+    # Use Peewee ORM syntax
+    photo = Photo.get_or_none(Photo.id == photo_id)
     if not photo:
         raise HTTPException(404, "Photo not found")
     
