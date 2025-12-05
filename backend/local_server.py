@@ -1615,47 +1615,64 @@ class ImprovedLocalServer:
                 }}
                 
                 function buildGallery() {{
-                    const gallery = document.getElementById('gallery');
-                    
-                    if (photos.length === 0) {{
-                        gallery.innerHTML = '<div class="no-photos"><h2>📷 No photos available yet</h2><p>Check back later!</p></div>';
-                        return;
-                    }}
-                    
-                    gallery.innerHTML = '';
-                    
-                    photos.forEach(photo => {{
-                        const card = document.createElement('div');
-                        card.className = 'photo-card';
+                    try {{
+                        console.log('Building gallery...');
+                        const gallery = document.getElementById('gallery');
                         
-                        const photoContainer = document.createElement('div');
-                        photoContainer.className = 'photo-container';
-                        photoContainer.innerHTML = '<div class="loading">Loading...</div>';
-                        
-                        const actions = document.createElement('div');
-                        actions.className = 'photo-actions';
-                        
-                        const downloadBtn = document.createElement('button');
-                        downloadBtn.className = 'download-btn';
-                        downloadBtn.textContent = '⬇ Download Original';
-                        downloadBtn.onclick = (e) => handleDownload(photo.id, e);
-                        
-                        // Disable if already at limit
-                        if (currentDownloadsUsed >= currentDownloadLimit) {{
-                            downloadBtn.disabled = true;
-                            downloadBtn.style.background = '#95A5A6';
-                            downloadBtn.style.cursor = 'not-allowed';
-                            downloadBtn.textContent = '❌ Download Limit Reached';
+                        if (!gallery) {{
+                            console.error('Gallery element not found!');
+                            return;
                         }}
                         
-                        actions.appendChild(downloadBtn);
+                        if (photos.length === 0) {{
+                            gallery.innerHTML = '<div class="no-photos"><h2>📷 No photos available yet</h2><p>Check back later!</p></div>';
+                            return;
+                        }}
                         
-                        card.appendChild(photoContainer);
-                        card.appendChild(actions);
-                        gallery.appendChild(card);
+                        gallery.innerHTML = '';
                         
-                        renderSecureImage(photo, photoContainer);
-                    }});
+                        photos.forEach((photo, index) => {{
+                            console.log('Adding photo', index + 1, 'of', photos.length);
+                            const card = document.createElement('div');
+                            card.className = 'photo-card';
+                            
+                            const photoContainer = document.createElement('div');
+                            photoContainer.className = 'photo-container';
+                            photoContainer.innerHTML = '<div class="loading">Loading...</div>';
+                            
+                            const actions = document.createElement('div');
+                            actions.className = 'photo-actions';
+                            
+                            const downloadBtn = document.createElement('button');
+                            downloadBtn.className = 'download-btn';
+                            downloadBtn.textContent = '⬇ Download Original';
+                            downloadBtn.onclick = (e) => handleDownload(photo.id, e);
+                            
+                            // Disable if already at limit
+                            if (currentDownloadsUsed >= currentDownloadLimit) {{
+                                downloadBtn.disabled = true;
+                                downloadBtn.style.background = '#95A5A6';
+                                downloadBtn.style.cursor = 'not-allowed';
+                                downloadBtn.textContent = '❌ Download Limit Reached';
+                            }}
+                            
+                            actions.appendChild(downloadBtn);
+                            
+                            card.appendChild(photoContainer);
+                            card.appendChild(actions);
+                            gallery.appendChild(card);
+                            
+                            renderSecureImage(photo, photoContainer);
+                        }});
+                        
+                        console.log('Gallery built successfully!');
+                    }} catch (error) {{
+                        console.error('Error building gallery:', error);
+                        const gallery = document.getElementById('gallery');
+                        if (gallery) {{
+                            gallery.innerHTML = '<div class="no-photos"><h2>⚠️ Error Loading Gallery</h2><p>' + error.message + '</p></div>';
+                        }}
+                    }}
                 }}
                 
                 async function requestMoreDownloads() {{
@@ -1705,6 +1722,12 @@ class ImprovedLocalServer:
                 }}
                 
                 buildGallery();
+                
+                // Log initial state for debugging
+                console.log('Gallery initialized');
+                console.log('Photos count:', photos.length);
+                console.log('Session UUID:', sessionUUID);
+                console.log('Current downloads:', currentDownloadsUsed + '/' + currentDownloadLimit);
             </script>
         </body>
         </html>
