@@ -448,27 +448,45 @@ class EnhancedAppService:
     def get_student_photos(self, student: Student) -> List[Photo]:
         """Get photos containing a student"""
         try:
-            # Query StudentPhoto table directly to avoid backref issues
+            print(f"\n[DEBUG] Getting photos for student {student.id} ({student.state_code})")
+            
+            # Query StudentPhoto table directly
             student_photo_records = list(StudentPhoto.select().where(
                 StudentPhoto.student == student
             ))
+            
+            print(f"[DEBUG] Found {len(student_photo_records)} student_photo records")
             
             if not student_photo_records:
                 print(f"[DEBUG] No student_photo records found for student {student.id}")
                 return []
             
             photo_ids = [sp.photo_id for sp in student_photo_records]
-            print(f"[DEBUG] Found {len(photo_ids)} photo IDs for student {student.id}: {photo_ids}")
+            print(f"[DEBUG] Photo IDs: {photo_ids}")
             
             photos = list(Photo.select().where(Photo.id.in_(photo_ids)))
             print(f"[DEBUG] Retrieved {len(photos)} photo objects")
-            return photos
+            
+            # Verify photos exist on disk
+            valid_photos = []
+            for photo in photos:
+                path = photo.thumbnail_path or photo.original_path
+                if path and os.path.exists(path):
+                    valid_photos.append(photo)
+                    print(f"[DEBUG] ✓ Photo {photo.id}: {os.path.basename(path)}")
+                else:
+                    print(f"[DEBUG] ✗ Photo {photo.id}: File not found at {path}")
+            
+            print(f"[DEBUG] Returning {len(valid_photos)} valid photos\n")
+            return valid_photos
+            
         except Exception as e:
             print(f"[ERROR] get_student_photos failed: {e}")
             import traceback
             traceback.print_exc()
             return []
-    
+
+        
     def check_license(self) -> Dict:
         """Check license validity"""
         if not self.current_photographer.license_valid_until:

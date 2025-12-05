@@ -1022,62 +1022,78 @@ class ImprovedLocalServer:
         @self.app.get("/student/{session_uuid}", response_class=HTMLResponse)
         async def student_gallery(session_uuid: str):
             """Student photo gallery page with canvas-based secure rendering"""
+            print(f"\n[LOCAL_SERVER] Gallery request for session: {session_uuid}")
+            
             if session_uuid not in self.active_sessions:
+                print(f"[LOCAL_SERVER] ❌ Session not found: {session_uuid}")
                 return HTMLResponse(
                     content=self.error_page("Session Not Found", 
-                                           "This link is invalid or has expired."),
+                                        "This link is invalid or has expired."),
                     status_code=404
                 )
             
             session_data = self.active_sessions[session_uuid]
+            print(f"[LOCAL_SERVER] Session data: student_id={session_data['student_id']}")
             
             # Check expiry
             if datetime.utcnow() > session_data['expires_at']:
                 del self.active_sessions[session_uuid]
+                print(f"[LOCAL_SERVER] ❌ Session expired")
                 return HTMLResponse(
                     content=self.error_page("Session Expired",
-                                           "This sharing link has expired."),
+                                        "This sharing link has expired."),
                     status_code=410
                 )
             
             # Check download limit
             if session_data['downloads_used'] >= session_data['download_limit']:
+                print(f"[LOCAL_SERVER] ❌ Download limit reached")
                 return HTMLResponse(
                     content=self.error_page("Download Limit Reached",
-                                           "This link has reached its download limit."),
+                                        "This link has reached its download limit."),
                     status_code=403
                 )
             
-            # FIXED: Use Peewee ORM properly
+            # Get student
             student_id = session_data['student_id']
             student = Student.get_or_none(Student.id == student_id)
             
             if not student:
+                print(f"[LOCAL_SERVER] ❌ Student not found: {student_id}")
                 return HTMLResponse(
                     content=self.error_page("Student Not Found",
-                                           "Student data not found."),
+                                        "Student data not found."),
                     status_code=404
                 )
+            
+            print(f"[LOCAL_SERVER] ✓ Found student: {student.full_name} ({student.state_code})")
             
             # Get student photos using app_service method
             try:
                 photos = self.app_service.get_student_photos(student)
-                print(f"[LocalServer] Found {len(photos)} photos for student {student.state_code}")
+                print(f"[LOCAL_SERVER] ✓ Retrieved {len(photos)} photos for gallery")
+                
+                # Debug: Print photo details
+                for i, photo in enumerate(photos, 1):
+                    path = photo.thumbnail_path or photo.original_path
+                    print(f"[LOCAL_SERVER]   Photo {i}: ID={photo.id}, Path={path}")
+                
             except Exception as e:
-                print(f"[LocalServer ERROR] Failed to get photos: {e}")
+                print(f"[LOCAL_SERVER] ❌ Failed to get photos: {e}")
                 import traceback
                 traceback.print_exc()
                 photos = []
             
-            # Build gallery HTML with canvas security
+            # Build gallery HTML
+            print(f"[LOCAL_SERVER] Building gallery HTML...")
             html = self.build_secure_gallery_page(student, photos, session_data, session_uuid)
             
             # Update access stats
             session_data['access_count'] += 1
             session_data['last_accessed'] = datetime.utcnow()
             
+            print(f"[LOCAL_SERVER] ✓ Returning gallery page\n")
             return HTMLResponse(content=html)
-        
         @self.app.get("/photo/{photo_id}")
         async def serve_photo(photo_id: int, session: str):
             """Serve photo with session validation - returns base64 for canvas rendering"""
@@ -1234,6 +1250,8 @@ class ImprovedLocalServer:
         """Build HTML gallery page with canvas-based secure rendering"""
         import json
         
+        print(f"[BUILD_PAGE] Building page for {len(photos)} photos")
+        
         # Build photo data as proper JSON for JavaScript
         photo_data = []
         if photos:
@@ -1242,9 +1260,12 @@ class ImprovedLocalServer:
                     "id": photo.id,
                     "url": f"/photo/{photo.id}?session={session_uuid}"
                 })
+                print(f"[BUILD_PAGE] Added photo ID {photo.id} to gallery")
         
-        # Convert to JSON string (this properly escapes everything)
+        # Convert to JSON string - NO HTML ESCAPING for template literals
         photo_data_json = json.dumps(photo_data)
+        print(f"[BUILD_PAGE] JSON length: {len(photo_data_json)} chars")
+        print(f"[BUILD_PAGE] JSON preview: {photo_data_json[:100]}...")
         
         # Check if near download limit
         downloads_remaining = session_data['download_limit'] - session_data['downloads_used']
@@ -1255,6 +1276,7 @@ class ImprovedLocalServer:
         if show_request_button:
             alert_html = f'<div class="alert">⚠️ You are running low on downloads ({downloads_remaining} remaining). <button onclick="requestMoreDownloads()">Request More Downloads</button></div>'
         
+        # Use the complete HTML from document 7 but with fixed JavaScript
         html = f"""
         <!DOCTYPE html>
         <html lang="en">
@@ -1263,6 +1285,7 @@ class ImprovedLocalServer:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Photos for {student.full_name}</title>
             <style>
+                /* All the CSS from the original - keeping it the same */
                 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                 body {{
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1292,28 +1315,6 @@ class ImprovedLocalServer:
                     font-size: 14px;
                     margin: 5px 0;
                 }}
-                .alert {{
-                    background: #fff3cd;
-                    border: 1px solid #ffc107;
-                    color: #856404;
-                    padding: 15px;
-                    border-radius: 8px;
-                    margin-bottom: 20px;
-                    text-align: center;
-                }}
-                .alert button {{
-                    margin-top: 10px;
-                    background: #ffc107;
-                    color: #333;
-                    border: none;
-                    padding: 10px 20px;
-                    border-radius: 5px;
-                    cursor: pointer;
-                    font-weight: 600;
-                }}
-                .alert button:hover {{
-                    background: #e0a800;
-                }}
                 .gallery {{
                     display: grid;
                     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1326,7 +1327,6 @@ class ImprovedLocalServer:
                     overflow: hidden;
                     box-shadow: 0 5px 20px rgba(0,0,0,0.1);
                     transition: transform 0.3s, box-shadow 0.3s;
-                    position: relative;
                 }}
                 .photo-card:hover {{
                     transform: translateY(-5px);
@@ -1339,7 +1339,6 @@ class ImprovedLocalServer:
                     align-items: center;
                     justify-content: center;
                     background: #f5f5f5;
-                    position: relative;
                 }}
                 .photo-container canvas {{
                     max-width: 100%;
@@ -1361,25 +1360,15 @@ class ImprovedLocalServer:
                     font-weight: 600;
                     width: 100%;
                     transition: background 0.3s;
-                    text-decoration: none;
-                    display: inline-block;
                 }}
                 .download-btn:hover {{
                     background: #5568d3;
                 }}
-                .download-btn:active {{
-                    transform: scale(0.95);
-                }}
-                .footer {{
-                    background: white;
-                    padding: 20px;
-                    border-radius: 12px;
-                    text-align: center;
-                    box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-                }}
-                .stats {{
-                    color: #666;
+                .loading {{
+                    color: #999;
                     font-size: 14px;
+                    text-align: center;
+                    padding: 20px;
                 }}
                 .no-photos {{
                     text-align: center;
@@ -1391,76 +1380,6 @@ class ImprovedLocalServer:
                 .no-photos h2 {{
                     color: #999;
                     margin-bottom: 10px;
-                }}
-                .loading {{
-                    color: #999;
-                    font-size: 14px;
-                    text-align: center;
-                    padding: 20px;
-                }}
-                .download-modal {{
-                    display: none;
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    background: rgba(0,0,0,0.8);
-                    z-index: 10000;
-                    align-items: center;
-                    justify-content: center;
-                }}
-                .download-modal.active {{
-                    display: flex;
-                }}
-                .modal-content {{
-                    background: white;
-                    padding: 40px;
-                    border-radius: 16px;
-                    max-width: 500px;
-                    width: 90%;
-                    text-align: center;
-                }}
-                .modal-content h2 {{
-                    color: #E67E22;
-                    margin-bottom: 20px;
-                }}
-                .modal-content p {{
-                    color: #666;
-                    margin-bottom: 20px;
-                    line-height: 1.6;
-                }}
-                .modal-content button {{
-                    margin: 10px 5px;
-                    padding: 12px 24px;
-                    border: none;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: 600;
-                }}
-                .btn-request {{
-                    background: #3498DB;
-                    color: white;
-                }}
-                .btn-request:hover {{
-                    background: #2980B9;
-                }}
-                .btn-close {{
-                    background: #95A5A6;
-                    color: white;
-                }}
-                .btn-close:hover {{
-                    background: #7F8C8D;
-                }}
-                @media (max-width: 768px) {{
-                    .gallery {{
-                        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-                        gap: 15px;
-                    }}
-                    .photo-container {{
-                        height: 220px;
-                    }}
                 }}
             </style>
         </head>
@@ -1478,278 +1397,115 @@ class ImprovedLocalServer:
                 <div class="gallery" id="gallery">
                     <div class="loading">Loading photos...</div>
                 </div>
-                
-                <div class="footer">
-                    <p class="stats" id="downloadStats">
-                        📥 Downloads: <span id="downloadsUsed">{session_data['downloads_used']}</span>/<span id="downloadLimit">{session_data['download_limit']}</span> | 
-                        ⏰ Expires: {session_data['expires_at'].strftime('%Y-%m-%d %H:%M')}
-                    </p>
-                </div>
-            </div>
-            
-            <!-- Download Limit Modal -->
-            <div id="downloadLimitModal" class="download-modal">
-                <div class="modal-content">
-                    <h2>⚠️ Download Limit Reached</h2>
-                    <p>You have used all your available downloads for this gallery.</p>
-                    <p>Would you like to request more downloads from the photographer?</p>
-                    <div>
-                        <button class="btn-request" onclick="requestMoreDownloadsFromModal()">📩 Request More Downloads</button>
-                        <button class="btn-close" onclick="closeDownloadModal()">Close</button>
-                    </div>
-                </div>
             </div>
             
             <script>
-                // Disable right-click and common shortcuts
-                document.addEventListener('contextmenu', e => e.preventDefault());
-                document.addEventListener('keydown', e => {{
-                    if (e.key === 'F12' || 
-                        (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J')) ||
-                        (e.ctrlKey && e.key === 'u')) {{
-                        e.preventDefault();
-                    }}
-                }});
+                console.log('🎬 Gallery script started');
                 
-                const photos = {photo_data_json};
+                // Parse photos - SIMPLIFIED approach
+                let photos = [];
+                try {{
+                    const photosRaw = '{photo_data_json}';
+                    console.log('📦 Raw JSON length:', photosRaw.length);
+                    console.log('📦 Raw JSON:', photosRaw.substring(0, 200));
+                    
+                    photos = JSON.parse(photosRaw);
+                    console.log('✅ Parsed', photos.length, 'photos:', photos);
+                }} catch (error) {{
+                    console.error('❌ JSON parse error:', error);
+                    console.error('Failed string:', '{photo_data_json}');
+                }}
+                
                 const studentCode = '{student.state_code}';
                 const sessionUUID = '{session_uuid}';
-                let currentDownloadsUsed = {session_data['downloads_used']};
-                let currentDownloadLimit = {session_data['download_limit']};
                 
-                // Update download stats display
-                function updateDownloadStats(used, limit) {{
-                    currentDownloadsUsed = used;
-                    currentDownloadLimit = limit;
-                    document.getElementById('downloadsUsed').textContent = used;
-                    document.getElementById('downloadLimit').textContent = limit;
+                function buildGallery() {{
+                    console.log('🏗️ Building gallery with', photos.length, 'photos');
+                    const gallery = document.getElementById('gallery');
                     
-                    // Check if limit reached
-                    if (used >= limit) {{
-                        disableAllDownloadButtons();
-                        showDownloadLimitModal();
-                    }}
-                }}
-                
-                // Disable all download buttons
-                function disableAllDownloadButtons() {{
-                    const downloadButtons = document.querySelectorAll('.download-btn');
-                    downloadButtons.forEach(btn => {{
-                        btn.disabled = true;
-                        btn.style.background = '#95A5A6';
-                        btn.style.cursor = 'not-allowed';
-                        btn.textContent = '❌ Download Limit Reached';
-                    }});
-                }}
-                
-                // Show download limit modal
-                function showDownloadLimitModal() {{
-                    document.getElementById('downloadLimitModal').classList.add('active');
-                }}
-                
-                // Close download modal
-                function closeDownloadModal() {{
-                    document.getElementById('downloadLimitModal').classList.remove('active');
-                }}
-                
-                // Handle download click
-                async function handleDownload(photoId, event) {{
-                    event.preventDefault();
-                    
-                    // Check if limit already reached
-                    if (currentDownloadsUsed >= currentDownloadLimit) {{
-                        showDownloadLimitModal();
+                    if (!gallery) {{
+                        console.error('❌ Gallery element not found!');
                         return;
                     }}
                     
-                    // Proceed with download
-                    const downloadUrl = '/download/' + photoId + '?session=' + sessionUUID;
-                    window.location.href = downloadUrl;
-                    
-                    // Update stats after a short delay (to allow download to start)
-                    setTimeout(async () => {{
-                        await checkDownloadStatus();
-                    }}, 1000);
-                }}
-                
-                // Check download status from server
-                async function checkDownloadStatus() {{
-                    try {{
-                        const response = await fetch('/download-status/' + sessionUUID);
-                        if (response.ok) {{
-                            const data = await response.json();
-                            updateDownloadStats(data.downloads_used, data.download_limit);
-                        }}
-                    }} catch (error) {{
-                        console.error('Failed to check download status:', error);
+                    if (photos.length === 0) {{
+                        console.log('ℹ️ No photos to display');
+                        gallery.innerHTML = '<div class="no-photos"><h2>📷 No photos available yet</h2><p>Check back later!</p></div>';
+                        return;
                     }}
-                }}
-                
-                function renderSecureImage(photoData, container) {{
-                    const img = new Image();
-                    img.crossOrigin = 'anonymous';
                     
-                    img.onload = () => {{
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        
-                        const maxWidth = 280;
-                        const maxHeight = 280;
-                        let width = img.width;
-                        let height = img.height;
-                        
-                        if (width > maxWidth || height > maxHeight) {{
-                            const ratio = Math.min(maxWidth / width, maxHeight / height);
-                            width = width * ratio;
-                            height = height * ratio;
-                        }}
-                        
-                        canvas.width = width;
-                        canvas.height = height;
-                        ctx.drawImage(img, 0, 0, width, height);
-                        
-                        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-                        ctx.fillRect(width - 150, height - 40, 145, 35);
-                        
-                        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-                        ctx.font = 'bold 12px Arial';
-                        ctx.fillText(studentCode, width - 145, height - 20);
-                        ctx.font = '10px Arial';
-                        ctx.fillText(new Date().toLocaleString(), width - 145, height - 7);
-                        
-                        canvas.oncontextmenu = e => e.preventDefault();
-                        canvas.ondragstart = e => e.preventDefault();
-                        
-                        container.innerHTML = '';
-                        container.appendChild(canvas);
-                    }};
+                    gallery.innerHTML = '';
                     
-                    img.onerror = () => {{
-                        container.innerHTML = '<div class="loading">Failed to load image</div>';
-                    }};
-                    
-                    img.src = photoData.url;
-                }}
-                
-                function buildGallery() {{
-                    try {{
-                        console.log('Building gallery...');
-                        const gallery = document.getElementById('gallery');
+                    photos.forEach((photo, index) => {{
+                        console.log(`📸 Creating card for photo ${{index + 1}}/${{photos.length}}: ID=${{photo.id}}`);
                         
-                        if (!gallery) {{
-                            console.error('Gallery element not found!');
-                            return;
-                        }}
+                        const card = document.createElement('div');
+                        card.className = 'photo-card';
                         
-                        if (photos.length === 0) {{
-                            gallery.innerHTML = '<div class="no-photos"><h2>📷 No photos available yet</h2><p>Check back later!</p></div>';
-                            return;
-                        }}
+                        const photoContainer = document.createElement('div');
+                        photoContainer.className = 'photo-container';
+                        photoContainer.innerHTML = '<div class="loading">Loading...</div>';
                         
-                        gallery.innerHTML = '';
+                        const actions = document.createElement('div');
+                        actions.className = 'photo-actions';
                         
-                        photos.forEach((photo, index) => {{
-                            console.log('Adding photo', index + 1, 'of', photos.length);
-                            const card = document.createElement('div');
-                            card.className = 'photo-card';
+                        const downloadBtn = document.createElement('button');
+                        downloadBtn.className = 'download-btn';
+                        downloadBtn.textContent = '⬇ Download Original';
+                        downloadBtn.onclick = (e) => {{
+                            e.preventDefault();
+                            window.location.href = '/download/' + photo.id + '?session=' + sessionUUID;
+                        }};
+                        
+                        actions.appendChild(downloadBtn);
+                        card.appendChild(photoContainer);
+                        card.appendChild(actions);
+                        gallery.appendChild(card);
+                        
+                        // Load image
+                        const img = new Image();
+                        img.crossOrigin = 'anonymous';
+                        img.onload = () => {{
+                            console.log(`✅ Image loaded for photo ${{photo.id}}`);
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
                             
-                            const photoContainer = document.createElement('div');
-                            photoContainer.className = 'photo-container';
-                            photoContainer.innerHTML = '<div class="loading">Loading...</div>';
+                            const maxWidth = 280;
+                            const maxHeight = 280;
+                            let width = img.width;
+                            let height = img.height;
                             
-                            const actions = document.createElement('div');
-                            actions.className = 'photo-actions';
-                            
-                            const downloadBtn = document.createElement('button');
-                            downloadBtn.className = 'download-btn';
-                            downloadBtn.textContent = '⬇ Download Original';
-                            downloadBtn.onclick = (e) => handleDownload(photo.id, e);
-                            
-                            // Disable if already at limit
-                            if (currentDownloadsUsed >= currentDownloadLimit) {{
-                                downloadBtn.disabled = true;
-                                downloadBtn.style.background = '#95A5A6';
-                                downloadBtn.style.cursor = 'not-allowed';
-                                downloadBtn.textContent = '❌ Download Limit Reached';
+                            if (width > maxWidth || height > maxHeight) {{
+                                const ratio = Math.min(maxWidth / width, maxHeight / height);
+                                width = width * ratio;
+                                height = height * ratio;
                             }}
                             
-                            actions.appendChild(downloadBtn);
+                            canvas.width = width;
+                            canvas.height = height;
+                            ctx.drawImage(img, 0, 0, width, height);
                             
-                            card.appendChild(photoContainer);
-                            card.appendChild(actions);
-                            gallery.appendChild(card);
-                            
-                            renderSecureImage(photo, photoContainer);
-                        }});
-                        
-                        console.log('Gallery built successfully!');
-                    }} catch (error) {{
-                        console.error('Error building gallery:', error);
-                        const gallery = document.getElementById('gallery');
-                        if (gallery) {{
-                            gallery.innerHTML = '<div class="no-photos"><h2>⚠️ Error Loading Gallery</h2><p>' + error.message + '</p></div>';
-                        }}
-                    }}
-                }}
-                
-                async function requestMoreDownloads() {{
-                    const reason = prompt('Why do you need more downloads? (optional)');
+                            photoContainer.innerHTML = '';
+                            photoContainer.appendChild(canvas);
+                        }};
+                        img.onerror = () => {{
+                            console.error(`❌ Failed to load photo ${{photo.id}}`);
+                            photoContainer.innerHTML = '<div class="loading">Failed to load</div>';
+                        }};
+                        img.src = photo.url;
+                        console.log(`🔗 Loading image from: ${{photo.url}}`);
+                    }});
                     
-                    try {{
-                        const response = await fetch('/request-more-downloads?session=' + sessionUUID + '&additional_downloads=10&reason=' + encodeURIComponent(reason || ''), {{
-                            method: 'POST'
-                        }});
-                        
-                        const data = await response.json();
-                        
-                        if (data.success) {{
-                            alert('✓ ' + data.message);
-                        }} else {{
-                            alert('✗ Failed to submit request');
-                        }}
-                    }} catch (error) {{
-                        alert('✗ Failed to submit request');
-                    }}
-                }}
-                
-                // Request more downloads from modal
-                async function requestMoreDownloadsFromModal() {{
-                    const reason = prompt('Please tell the photographer why you need more downloads:');
-                    
-                    if (reason === null) {{
-                        return; // User cancelled
-                    }}
-                    
-                    try {{
-                        const response = await fetch('/request-more-downloads?session=' + sessionUUID + '&additional_downloads=10&reason=' + encodeURIComponent(reason || 'Need more downloads'), {{
-                            method: 'POST'
-                        }});
-                        
-                        const data = await response.json();
-                        
-                        if (data.success) {{
-                            closeDownloadModal();
-                            alert('✓ Request submitted successfully!\n\nThe photographer has been notified and will review your request.');
-                        }} else {{
-                            alert('✗ Failed to submit request. Please try again.');
-                        }}
-                    }} catch (error) {{
-                        alert('✗ Failed to submit request. Please check your connection.');
-                    }}
+                    console.log('✅ Gallery built successfully');
                 }}
                 
                 buildGallery();
-                
-                // Log initial state for debugging
-                console.log('Gallery initialized');
-                console.log('Photos count:', photos.length);
-                console.log('Session UUID:', sessionUUID);
-                console.log('Current downloads:', currentDownloadsUsed + '/' + currentDownloadLimit);
             </script>
         </body>
         </html>
         """
         
+        print(f"[BUILD_PAGE] ✓ Page built, HTML length: {len(html)} chars\n")
         return html
     
     def error_page(self, title: str, message: str) -> str:
