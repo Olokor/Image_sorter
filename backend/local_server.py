@@ -1060,7 +1060,14 @@ class ImprovedLocalServer:
                 )
             
             # Get student photos using app_service method
-            photos = self.app_service.get_student_photos(student)
+            try:
+                photos = self.app_service.get_student_photos(student)
+                print(f"[LocalServer] Found {len(photos)} photos for student {student.state_code}")
+            except Exception as e:
+                print(f"[LocalServer ERROR] Failed to get photos: {e}")
+                import traceback
+                traceback.print_exc()
+                photos = []
             
             # Build gallery HTML with canvas security
             html = self.build_secure_gallery_page(student, photos, session_data, session_uuid)
@@ -1225,18 +1232,28 @@ class ImprovedLocalServer:
     
     def build_secure_gallery_page(self, student, photos, session_data, session_uuid) -> str:
         """Build HTML gallery page with canvas-based secure rendering"""
-        # Build photo data as JSON for JavaScript
-        photo_data_json = "["
+        import json
+        
+        # Build photo data as proper JSON for JavaScript
+        photo_data = []
         if photos:
-            photo_items = []
             for photo in photos:
-                photo_items.append(f'{{"id": {photo.id}, "url": "/photo/{photo.id}?session={session_uuid}"}}')
-            photo_data_json += ",".join(photo_items)
-        photo_data_json += "]"
+                photo_data.append({
+                    "id": photo.id,
+                    "url": f"/photo/{photo.id}?session={session_uuid}"
+                })
+        
+        # Convert to JSON string (this properly escapes everything)
+        photo_data_json = json.dumps(photo_data)
         
         # Check if near download limit
         downloads_remaining = session_data['download_limit'] - session_data['downloads_used']
         show_request_button = downloads_remaining < 10
+        
+        # Build alert HTML if needed
+        alert_html = ''
+        if show_request_button:
+            alert_html = f'<div class="alert">⚠️ You are running low on downloads ({downloads_remaining} remaining). <button onclick="requestMoreDownloads()">Request More Downloads</button></div>'
         
         html = f"""
         <!DOCTYPE html>
@@ -1456,7 +1473,7 @@ class ImprovedLocalServer:
                     <p class="info">{len(photos)} photo(s) available</p>
                 </div>
                 
-                {'<div class="alert">⚠️ You are running low on downloads (' + str(downloads_remaining) + ' remaining). <button onclick="requestMoreDownloads()">Request More Downloads</button></div>' if show_request_button else ''}
+                {alert_html}
                 
                 <div class="gallery" id="gallery">
                     <div class="loading">Loading photos...</div>

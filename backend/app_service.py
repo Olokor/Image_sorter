@@ -447,12 +447,27 @@ class EnhancedAppService:
     
     def get_student_photos(self, student: Student) -> List[Photo]:
         """Get photos containing a student"""
-        photo_ids = [sp.photo.id for sp in student.student_photos]
-        
-        if not photo_ids:
+        try:
+            # Query StudentPhoto table directly to avoid backref issues
+            student_photo_records = list(StudentPhoto.select().where(
+                StudentPhoto.student == student
+            ))
+            
+            if not student_photo_records:
+                print(f"[DEBUG] No student_photo records found for student {student.id}")
+                return []
+            
+            photo_ids = [sp.photo_id for sp in student_photo_records]
+            print(f"[DEBUG] Found {len(photo_ids)} photo IDs for student {student.id}: {photo_ids}")
+            
+            photos = list(Photo.select().where(Photo.id.in_(photo_ids)))
+            print(f"[DEBUG] Retrieved {len(photos)} photo objects")
+            return photos
+        except Exception as e:
+            print(f"[ERROR] get_student_photos failed: {e}")
+            import traceback
+            traceback.print_exc()
             return []
-        
-        return list(Photo.select().where(Photo.id.in_(photo_ids)))
     
     def check_license(self) -> Dict:
         """Check license validity"""
