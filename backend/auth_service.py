@@ -12,13 +12,31 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 import os
+import sys
 from peewee import *
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ==================== CONFIGURATION ====================
-API_BASE_URL = os.getenv("PHOTOSORTER_API_URL", "http://localhost:8001")
+# IMPORTANT: Set this to your production API URL before building
+# PRODUCTION_API_URL = "https://your-hosted-backend.com"  # TODO: Replace with actual production URL
+DEVELOPMENT_API_URL = "http://localhost:8001"
+
+# Auto-detect: Try environment variable first, then check if running as built executable
+API_BASE_URL = "http://localhost:8001"
+
+# if not API_BASE_URL:
+#     # Check if running as PyInstaller bundle
+#     if getattr(sys, 'frozen', False):
+#         # Running as compiled executable - use production URL
+#         API_BASE_URL = PRODUCTION_API_URL
+#         print(f"\n[BUILD MODE] Using production API: {API_BASE_URL}")
+#     else:
+#         # Running in development - use local URL
+#         API_BASE_URL = DEVELOPMENT_API_URL
+#         print(f"\n[DEV MODE] Using development API: {API_BASE_URL}")
+
 DESKTOP_APP_API_KEY =  "2EJYsmKOG4RYin38IyxfNxyhaZqdEvlAYX8XK7bNZeI"
 REQUEST_SIGNING_KEY = os.getenv("REQUEST_SIGNING_KEY")
 
@@ -53,7 +71,7 @@ class SecureAuthService:
     def __init__(self):
         self.api_url = API_BASE_URL.rstrip("/")
         self.api_key = "2EJYsmKOG4RYin38IyxfNxyhaZqdEvlAYX8XK7bNZeI"
-        print(self.api_key)
+        # print(self.api_key)
         self.signing_key = REQUEST_SIGNING_KEY
         
         self.token: Optional[str] = None

@@ -615,6 +615,7 @@ async def get_license_status(_: bool = Depends(require_auth)):
 @license_router.get("/pricing")
 async def get_license_pricing():
     """Get current pricing from hosted backend (PUBLIC - no auth required)"""
+    print(f"\n[PRICING] Fetching pricing from: {auth_service.api_url}/license/pricing")
     try:
         import httpx
         
@@ -625,13 +626,15 @@ async def get_license_pricing():
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"Pricing fetched: {data['price_per_student']}")
+                print(f"[PRICING] ✓ Fetched successfully: {data['price_per_student']} {data['currency']}")
                 return data
             else:
+                print(f"[PRICING] ✗ Server error: {response.status_code}")
                 raise Exception(f"Server error: {response.status_code}")
                 
     except Exception as e:
-        print(f"Pricing fetch failed: {e}")
+        print(f"[PRICING] ✗ Fetch failed: {e}")
+        print(f"[PRICING] ⚠ Using fallback price: 200 NGN")
         # Fallback to default price
         return {
             "price_per_student": 200,
